@@ -63,6 +63,11 @@ By default, Docker ports are bound to loopback only:
 - `127.0.0.1:3000` (OpenWebUI)
 - `127.0.0.1:3010` (Model Admin)
 
+If you run `localai up --expose` (or `localai up --expose <port>`), services bind to all interfaces:
+
+- `0.0.0.0:80` (OpenWebUI)
+- `0.0.0.0:3010` (Model Admin)
+
 Optional hardening config lives in `.env` (template: `.env.example`):
 
 - `LOCALAI_BIND_IP=127.0.0.1` (recommended)
@@ -82,6 +87,15 @@ localai up --sync-models --warmup
 # Higher-utilization mode (good for larger Apple Silicon machines)
 localai up --boost --warmup
 
+# Expose services on all interfaces (OpenWebUI defaults to :80)
+localai up --expose --sync-models --warmup
+
+# Expose services on all interfaces with custom OpenWebUI port
+localai up --expose 8080 --sync-models --warmup
+
+# Start only Model Admin (skip OpenWebUI)
+localai up --admin-only --warmup
+
 # Start stack without pulling models
 localai up --warmup
 
@@ -93,6 +107,8 @@ What each flag does:
 
 - `--sync-models`: runs `ollama pull` for all configured models in `stack.toml`
 - `--warmup`: runs one test inference on `warmup_model` after Ollama is reachable
+- `--expose [PORT]`: binds services to `0.0.0.0` (OpenWebUI on `:PORT`, default `80`; Model Admin on `:3010`)
+- `--admin-only`: starts only `model-admin` via Docker Compose (OpenWebUI is not started)
 - `--boost`: applies a higher-utilization runtime profile (parallelism/queue/keep-alive, and model residency when RAM allows)
 
 ### Stop Modes
@@ -118,8 +134,12 @@ localai doctor
 
 ## Web UI Endpoints
 
-- OpenWebUI: <http://127.0.0.1:3000>
-- Model Admin: <http://127.0.0.1:3010>
+- Default (`localai up`):
+  - OpenWebUI: <http://127.0.0.1:3000>
+  - Model Admin: <http://127.0.0.1:3010>
+- Exposed mode (`localai up --expose [PORT]`):
+  - OpenWebUI: `http://<host-ip>:<PORT>` (defaults to `80` when omitted)
+  - Model Admin: `http://<host-ip>:3010`
 
 ## Configuration
 
