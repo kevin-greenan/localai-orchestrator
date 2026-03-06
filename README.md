@@ -31,6 +31,7 @@ Docker on macOS does not give Linux containers native Apple Metal acceleration. 
 cd localai-orchestrator
 python3 -m venv .venv
 source .venv/bin/activate
+pip install setuptools wheel
 pip install .
 
 localai doctor
@@ -54,6 +55,21 @@ Python 3.14 note:
 
 - Prefer `pip install .` or `pip install --no-build-isolation .` for this project.
 - Avoid `pip install -e .` here; it can produce a CLI entrypoint that does not resolve the `localai` module reliably.
+
+## Public-Safe Defaults
+
+By default, Docker ports are bound to loopback only:
+
+- `127.0.0.1:3000` (OpenWebUI)
+- `127.0.0.1:3010` (Model Admin)
+
+Optional hardening config lives in `.env` (template: `.env.example`):
+
+- `LOCALAI_BIND_IP=127.0.0.1` (recommended)
+- `MODEL_ADMIN_USERNAME=...`
+- `MODEL_ADMIN_PASSWORD=...`
+
+If both Model Admin credentials are set, the Model Admin UI/API requires HTTP Basic Auth.
 
 ## Usage
 
@@ -167,6 +183,29 @@ The Model Admin UI includes a collapsible **Advanced Ollama Console (Debug)** pa
 
 The console returns raw JSON plus execution time (`duration_ms`) for debugging.
 
+Security note:
+
+- The console is intentionally allowlisted to Ollama operations only (not a host shell).
+- If you expose Model Admin beyond localhost, set Basic Auth credentials and use a trusted reverse proxy/TLS.
+
+## Release Smoke Checklist
+
+Run these before sharing publicly:
+
+1. Fresh venv install:
+   - `python3 -m venv .venv && source .venv/bin/activate`
+   - `pip install setuptools wheel`
+   - `pip install .`
+2. Startup and health:
+   - `localai doctor`
+   - `localai up --sync-models --warmup`
+   - Verify OpenWebUI and Model Admin load.
+3. Model Admin sanity:
+   - Check hardware/runtime bar and stats cards render.
+   - Run one Advanced Console `generate` request.
+4. Shutdown path:
+   - `localai down --stop-native`
+
 ## Troubleshooting
 
 - `docker daemon permission denied`:
@@ -181,6 +220,9 @@ The console returns raw JSON plus execution time (`duration_ms`) for debugging.
 - `localai` missing new flags after pulling latest code:
   - Reinstall package into the active venv:
   - `pip install --no-build-isolation .`
+- Model Admin returns `401 Unauthorized`:
+  - You likely enabled `MODEL_ADMIN_USERNAME`/`MODEL_ADMIN_PASSWORD` in `.env`.
+  - Open `http://127.0.0.1:3010` and authenticate with those credentials.
 
 ## Project Structure
 

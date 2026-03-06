@@ -16,6 +16,7 @@ venv/
 
 # Local runtime/generated files
 .localai.env
+.env
 *.log
 
 # Tool caches

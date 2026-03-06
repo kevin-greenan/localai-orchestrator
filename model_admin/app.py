@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
+import secrets
 from time import perf_counter
 from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
 
 
@@ -37,6 +39,8 @@ LOCALAI_OLLAMA_MAX_LOADED_MODELS = max(1, _env_int("LOCALAI_OLLAMA_MAX_LOADED_MO
 LOCALAI_OLLAMA_KEEP_ALIVE = os.getenv("LOCALAI_OLLAMA_KEEP_ALIVE", "30m")
 LOCALAI_OLLAMA_MAX_QUEUE = max(1, _env_int("LOCALAI_OLLAMA_MAX_QUEUE", 160))
 LOCALAI_BOOST_ACTIVE = os.getenv("LOCALAI_BOOST_ACTIVE", "0") == "1"
+MODEL_ADMIN_USERNAME = os.getenv("MODEL_ADMIN_USERNAME", "").strip()
+MODEL_ADMIN_PASSWORD = os.getenv("MODEL_ADMIN_PASSWORD", "")
 
 POPULAR_MODELS: list[dict[str, str]] = [
     {"name": "llama3.2", "tag": "3b", "description": "Fast general-purpose model"},
@@ -65,6 +69,43 @@ ACTION_STATE: dict[str, Any] = {
     "last_duration_ms": 0,
     "last_error": "",
 }
+
+
+def _is_auth_enabled() -> bool:
+    return bool(MODEL_ADMIN_USERNAME and MODEL_ADMIN_PASSWORD)
+
+
+def _basic_unauthorized() -> Response:
+    return Response(
+        status_code=401,
+        content="Unauthorized",
+        headers={"WWW-Authenticate": 'Basic realm="Model Admin"'},
+    )
+
+
+def _auth_ok(header_value: str) -> bool:
+    if not header_value.startswith("Basic "):
+        return False
+    try:
+        raw = base64.b64decode(header_value.split(" ", 1)[1]).decode("utf-8")
+    except Exception:
+        return False
+    user, sep, pwd = raw.partition(":")
+    if not sep:
+        return False
+    return secrets.compare_digest(user, MODEL_ADMIN_USERNAME) and secrets.compare_digest(pwd, MODEL_ADMIN_PASSWORD)
+
+
+@app.middleware("http")
+async def require_auth(request: Request, call_next):
+    if not _is_auth_enabled():
+        return await call_next(request)
+    if request.url.path == "/healthz":
+        return await call_next(request)
+    auth = request.headers.get("Authorization", "")
+    if not _auth_ok(auth):
+        return _basic_unauthorized()
+    return await call_next(request)
 
 
 class ModelAction(BaseModel):

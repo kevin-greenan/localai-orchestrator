@@ -3,7 +3,7 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: openwebui
     ports:
-      - "3000:8080"
+      - "${LOCALAI_BIND_IP:-127.0.0.1}:3000:8080"
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
     volumes:
@@ -14,12 +14,14 @@ services:
       context: ./model_admin
     container_name: localai-model-admin
     ports:
-      - "3010:8081"
+      - "${LOCALAI_BIND_IP:-127.0.0.1}:3010:8081"
     env_file:
       - path: .localai.env
         required: false
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - MODEL_ADMIN_USERNAME=${MODEL_ADMIN_USERNAME:-}
+      - MODEL_ADMIN_PASSWORD=${MODEL_ADMIN_PASSWORD:-}
     restart: unless-stopped
 
 volumes:
