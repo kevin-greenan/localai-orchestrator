@@ -37,17 +37,23 @@ localai doctor
 localai up --sync-models --warmup
 ```
 
+When you change local source code and want `localai` to pick it up:
+
+```bash
+source .venv/bin/activate
+pip install --no-build-isolation .
+```
+
 First run note:
 
 - `--sync-models` pulls every model listed in `stack.toml` (`[native.ollama].models`).
 - If a model is not local yet, the first run will download it and may take a while.
 - If a model is already local, pull is usually quick and acts like an update check.
 
-If your environment has Python 3.14 entrypoint quirks, use:
+Python 3.14 note:
 
-```bash
-python -m localai.cli <command>
-```
+- Prefer `pip install .` or `pip install --no-build-isolation .` for this project.
+- Avoid `pip install -e .` here; it can produce a CLI entrypoint that does not resolve the `localai` module reliably.
 
 ## Usage
 
@@ -56,6 +62,9 @@ python -m localai.cli <command>
 ```bash
 # Full startup (recommended first run)
 localai up --sync-models --warmup
+
+# Higher-utilization mode (good for larger Apple Silicon machines)
+localai up --boost --warmup
 
 # Start stack without pulling models
 localai up --warmup
@@ -68,6 +77,7 @@ What each flag does:
 
 - `--sync-models`: runs `ollama pull` for all configured models in `stack.toml`
 - `--warmup`: runs one test inference on `warmup_model` after Ollama is reachable
+- `--boost`: applies a higher-utilization runtime profile (parallelism/queue/keep-alive, and model residency when RAM allows)
 
 ### Stop Modes
 
@@ -142,6 +152,21 @@ Generated at runtime:
 - Catalog merges curated recommendations with best-effort discovery from Ollama Library
 - Fit badges are heuristic estimates based on host RAM profile and model/tag size patterns
 
+### Advanced Ollama Console (Debug)
+
+The Model Admin UI includes a collapsible **Advanced Ollama Console (Debug)** panel with safe, allowlisted operations:
+
+- `tags`: Calls Ollama `/api/tags` to list local models and metadata.
+- `ps`: Calls Ollama `/api/ps` to show currently loaded/running models.
+- `show`: Calls Ollama `/api/show` for details about one model.
+  - Requires `model`.
+- `generate`: Calls Ollama `/api/generate` for a single non-streamed inference.
+  - Requires `model` and `prompt`.
+- `pull`: Calls Ollama `/api/pull` to pull/update one model (streamed server-side, summarized in response).
+  - Requires `model`.
+
+The console returns raw JSON plus execution time (`duration_ms`) for debugging.
+
 ## Troubleshooting
 
 - `docker daemon permission denied`:
@@ -153,6 +178,9 @@ Generated at runtime:
 - Model Admin changes not reflected after code updates:
   - Rebuild only that service:
   - `docker compose up -d --build model-admin`
+- `localai` missing new flags after pulling latest code:
+  - Reinstall package into the active venv:
+  - `pip install --no-build-isolation .`
 
 ## Project Structure
 

@@ -4,7 +4,7 @@ import json
 import os
 import re
 from time import perf_counter
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -14,7 +14,29 @@ from pydantic import BaseModel, Field
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434").rstrip("/")
 OLLAMA_LIBRARY_URL = os.getenv("OLLAMA_LIBRARY_URL", "https://ollama.com/library")
-LOCALAI_HOST_RAM_GB = max(8, int(os.getenv("LOCALAI_HOST_RAM_GB", "32")))
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+LOCALAI_HOST_RAM_GB = max(8, _env_int("LOCALAI_HOST_RAM_GB", 32))
+LOCALAI_CPU_LOGICAL = max(0, _env_int("LOCALAI_CPU_LOGICAL", 0))
+LOCALAI_CPU_PHYSICAL = max(0, _env_int("LOCALAI_CPU_PHYSICAL", 0))
+LOCALAI_CPU_PERF = max(0, _env_int("LOCALAI_CPU_PERF", 0))
+LOCALAI_MACHINE = os.getenv("LOCALAI_MACHINE", "arm64")
+LOCALAI_HW_MODEL = os.getenv("LOCALAI_HW_MODEL", "unknown")
+LOCALAI_GPU_BACKEND = os.getenv("LOCALAI_GPU_BACKEND", "Metal")
+LOCALAI_GPU_NAME = os.getenv("LOCALAI_GPU_NAME", "Apple Silicon Integrated GPU")
+LOCALAI_GPU_CORES = os.getenv("LOCALAI_GPU_CORES", "unknown")
+LOCALAI_OLLAMA_NUM_PARALLEL = max(1, _env_int("LOCALAI_OLLAMA_NUM_PARALLEL", 4))
+LOCALAI_OLLAMA_MAX_LOADED_MODELS = max(1, _env_int("LOCALAI_OLLAMA_MAX_LOADED_MODELS", 1))
+LOCALAI_OLLAMA_KEEP_ALIVE = os.getenv("LOCALAI_OLLAMA_KEEP_ALIVE", "30m")
+LOCALAI_OLLAMA_MAX_QUEUE = max(1, _env_int("LOCALAI_OLLAMA_MAX_QUEUE", 160))
+LOCALAI_BOOST_ACTIVE = os.getenv("LOCALAI_BOOST_ACTIVE", "0") == "1"
 
 POPULAR_MODELS: list[dict[str, str]] = [
     {"name": "llama3.2", "tag": "3b", "description": "Fast general-purpose model"},
@@ -47,6 +69,12 @@ ACTION_STATE: dict[str, Any] = {
 
 class ModelAction(BaseModel):
     model: str = Field(min_length=1)
+
+
+class ConsoleRequest(BaseModel):
+    op: Literal["tags", "ps", "show", "generate", "pull"]
+    model: str = ""
+    prompt: str = ""
 
 
 def _sum_int(items: list[dict[str, Any]], key: str) -> int:
@@ -313,6 +341,20 @@ async def metrics() -> dict[str, Any]:
             "loaded_vram_bytes": 0,
             "loaded_names": [],
             "actions": ACTION_STATE,
+            "host_ram_gb": LOCALAI_HOST_RAM_GB,
+            "cpu_logical": LOCALAI_CPU_LOGICAL,
+            "cpu_physical": LOCALAI_CPU_PHYSICAL,
+            "cpu_perf": LOCALAI_CPU_PERF,
+            "machine": LOCALAI_MACHINE,
+            "hw_model": LOCALAI_HW_MODEL,
+            "gpu_backend": LOCALAI_GPU_BACKEND,
+            "gpu_name": LOCALAI_GPU_NAME,
+            "gpu_cores": LOCALAI_GPU_CORES,
+            "num_parallel": LOCALAI_OLLAMA_NUM_PARALLEL,
+            "max_loaded_models": LOCALAI_OLLAMA_MAX_LOADED_MODELS,
+            "keep_alive": LOCALAI_OLLAMA_KEEP_ALIVE,
+            "max_queue": LOCALAI_OLLAMA_MAX_QUEUE,
+            "boost_active": LOCALAI_BOOST_ACTIVE,
             "error": str(e),
         }
 
@@ -334,6 +376,20 @@ async def metrics() -> dict[str, Any]:
         "loaded_vram_bytes": _sum_int(loaded, "size_vram"),
         "loaded_names": [m.get("name", "") for m in loaded if isinstance(m, dict)],
         "actions": ACTION_STATE,
+        "host_ram_gb": LOCALAI_HOST_RAM_GB,
+        "cpu_logical": LOCALAI_CPU_LOGICAL,
+        "cpu_physical": LOCALAI_CPU_PHYSICAL,
+        "cpu_perf": LOCALAI_CPU_PERF,
+        "machine": LOCALAI_MACHINE,
+        "hw_model": LOCALAI_HW_MODEL,
+        "gpu_backend": LOCALAI_GPU_BACKEND,
+        "gpu_name": LOCALAI_GPU_NAME,
+        "gpu_cores": LOCALAI_GPU_CORES,
+        "num_parallel": LOCALAI_OLLAMA_NUM_PARALLEL,
+        "max_loaded_models": LOCALAI_OLLAMA_MAX_LOADED_MODELS,
+        "keep_alive": LOCALAI_OLLAMA_KEEP_ALIVE,
+        "max_queue": LOCALAI_OLLAMA_MAX_QUEUE,
+        "boost_active": LOCALAI_BOOST_ACTIVE,
     }
 
 
@@ -369,6 +425,40 @@ async def delete_model(action: ModelAction) -> dict[str, Any]:
         stream=False,
         method="DELETE",
     )
+
+
+@app.post("/api/console")
+async def console(req: ConsoleRequest) -> dict[str, Any]:
+    start = perf_counter()
+
+    if req.op in {"show", "generate", "pull"} and not req.model.strip():
+        raise HTTPException(status_code=400, detail="model is required for this operation")
+    if req.op == "generate" and not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="prompt is required for generate")
+
+    if req.op == "tags":
+        result = await _ollama_get("/api/tags")
+    elif req.op == "ps":
+        result = await _ollama_get("/api/ps")
+    elif req.op == "show":
+        result = await _ollama_request("POST", "/api/show", {"name": req.model.strip()})
+    elif req.op == "generate":
+        result = await _ollama_request(
+            "POST",
+            "/api/generate",
+            {"model": req.model.strip(), "prompt": req.prompt, "stream": False},
+        )
+    elif req.op == "pull":
+        result = await _ollama_stream_post("/api/pull", {"model": req.model.strip(), "stream": True})
+    else:
+        raise HTTPException(status_code=400, detail="unsupported operation")
+
+    return {
+        "op": req.op,
+        "model": req.model.strip(),
+        "duration_ms": int((perf_counter() - start) * 1000),
+        "result": result,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -417,11 +507,33 @@ async def index() -> str:
       }
       .dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
       .dot.up { background: #22c55e; }
+      .hwbar {
+        margin-top: 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #101010;
+        padding: 9px 11px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .hwitem { color: var(--muted); font-size: 12px; }
+      .hwitem b { color: var(--text); font-weight: 600; }
       .grid { margin-top: 12px; display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(140px, 1fr)); }
       .card { border: 1px solid var(--border); border-radius: 10px; background: #121212; padding: 10px; }
       .label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
       .value { font-size: 29px; font-weight: 650; line-height: 1.15; }
       .subvalue { margin-top: 2px; font-size: 11px; color: var(--muted); min-height: 14px; }
+      .section-title {
+        margin-top: 18px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border);
+        font-size: 21px;
+        font-weight: 700;
+        color: #e5e7eb;
+        letter-spacing: 0.01em;
+        line-height: 1.2;
+      }
       .spark { margin-top: 7px; width: 100%; height: 28px; display: block; }
       .spark path.grid { stroke: #2b2b2b; stroke-width: 1; }
       .spark polyline.line { fill: none; stroke: #d4d4d8; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
@@ -478,6 +590,36 @@ async def index() -> str:
         overflow: auto;
         white-space: pre-wrap;
       }
+      .advanced {
+        margin-top: 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #0e0e0f;
+        padding: 10px;
+      }
+      .advanced summary {
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
+        color: #d4d4d8;
+      }
+      .advanced-body { margin-top: 10px; }
+      .advanced-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      .advanced-prompt { width: 100%; margin-top: 8px; }
+      .advanced-prompt {
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: #0c0c0d;
+        color: #d4d4d8;
+        padding: 10px 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        resize: vertical;
+      }
+      .advanced-prompt::placeholder { color: #8b8b90; }
+      .advanced pre {
+        min-height: 120px;
+        margin-top: 10px;
+      }
       table { width: 100%; border-collapse: collapse; margin-top: 12px; }
       th, td { text-align: left; border-bottom: 1px solid var(--border); padding: 8px 7px; }
       th { color: var(--muted); font-weight: 500; font-size: 12px; }
@@ -500,16 +642,25 @@ async def index() -> str:
           <div class=\"status\"><span id=\"status-dot\" class=\"dot\"></span><span id=\"status-text\">Ollama unavailable</span></div>
         </div>
 
+        <div class=\"hwbar\">
+          <div class=\"hwitem\"><b>CPU:</b> <span id=\"hw-cpu\">-</span></div>
+          <div class=\"hwitem\"><b>GPU:</b> <span id=\"hw-gpu\">-</span></div>
+          <div class=\"hwitem\"><b>System RAM:</b> <span id=\"hw-ram\">-</span></div>
+          <div class=\"hwitem\"><b>Runtime:</b> <span id=\"hw-runtime\">-</span></div>
+        </div>
+
         <div class=\"grid\">
           <div class=\"card\"><div class=\"label\">Stored Models</div><div id=\"m-models\" class=\"value\">-</div><div class=\"subvalue\">count</div><svg id=\"spark-models\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
           <div class=\"card\"><div class=\"label\">Model Store Size</div><div id=\"m-store\" class=\"value\">-</div><div class=\"subvalue\">disk footprint</div><svg id=\"spark-store\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
-          <div class=\"card\"><div class=\"label\">Loaded Models</div><div id=\"m-loaded\" class=\"value\">-</div><div id=\"m-loaded-names\" class=\"subvalue\">none</div><svg id=\"spark-loaded\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
-          <div class=\"card\"><div class=\"label\">API Latency</div><div id=\"m-latency\" class=\"value\">-</div><div class=\"subvalue\">/api/tags</div><svg id=\"spark-latency\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
-          <div class=\"card\"><div class=\"label\">Loaded RAM</div><div id=\"m-ram\" class=\"value\">-</div><div class=\"subvalue\">model resident set</div><svg id=\"spark-ram\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
-          <div class=\"card\"><div class=\"label\">Loaded VRAM</div><div id=\"m-vram\" class=\"value\">-</div><div class=\"subvalue\">accelerator memory</div><svg id=\"spark-vram\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
-          <div class=\"card\"><div class=\"label\">Active Jobs</div><div id=\"m-jobs\" class=\"value\">-</div><div class=\"subvalue\">pull/update/delete</div><svg id=\"spark-jobs\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
-          <div class=\"card\"><div class=\"label\">Last Action</div><div id=\"m-last\" class=\"value\" style=\"font-size:16px\">-</div><div id=\"m-host-ram\" class=\"subvalue\"></div></div>
+          <div class=\"card\"><div class=\"label\">Loaded Models</div><div id=\"m-loaded\" class=\"value\">-</div><div id=\"m-loaded-sub\" class=\"subvalue\">none</div><svg id=\"spark-loaded\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
+          <div class=\"card\"><div class=\"label\">API Latency</div><div id=\"m-latency\" class=\"value\">-</div><div id=\"m-latency-sub\" class=\"subvalue\">/api/tags</div><svg id=\"spark-latency\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
+          <div class=\"card\"><div class=\"label\">Loaded RAM</div><div id=\"m-ram\" class=\"value\">-</div><div id=\"m-ram-sub\" class=\"subvalue\">model resident set</div><svg id=\"spark-ram\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
+          <div class=\"card\"><div class=\"label\">Loaded VRAM</div><div id=\"m-vram\" class=\"value\">-</div><div id=\"m-vram-sub\" class=\"subvalue\">accelerator memory</div><svg id=\"spark-vram\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
+          <div class=\"card\"><div class=\"label\">Active Jobs</div><div id=\"m-jobs\" class=\"value\">-</div><div id=\"m-jobs-sub\" class=\"subvalue\">pull/update/delete</div><svg id=\"spark-jobs\" class=\"spark\" viewBox=\"0 0 160 28\" preserveAspectRatio=\"none\"></svg></div>
+          <div class=\"card\"><div class=\"label\">Last Action</div><div id=\"m-last\" class=\"value\" style=\"font-size:16px\">-</div><div id=\"m-last-sub\" class=\"subvalue\"></div></div>
         </div>
+
+        <div class=\"section-title\">Local Model Actions and Inventory</div>
 
         <div class=\"controls\">
           <input id=\"model\" placeholder=\"e.g. llama3.2:3b\" />
@@ -520,6 +671,25 @@ async def index() -> str:
         </div>
 
         <pre id=\"log\">Ready.</pre>
+
+        <details class=\"advanced\">
+          <summary>Advanced Ollama Console (Debug)</summary>
+          <div class=\"advanced-body\">
+            <div class=\"advanced-controls\">
+              <select id=\"console-op\">
+                <option value=\"tags\">tags</option>
+                <option value=\"ps\">ps</option>
+                <option value=\"show\">show</option>
+                <option value=\"generate\" selected>generate</option>
+                <option value=\"pull\">pull</option>
+              </select>
+              <input id=\"console-model\" placeholder=\"model (required for show/generate/pull)\" />
+              <button id=\"console-run\" onclick=\"runConsole()\">Run</button>
+            </div>
+            <textarea id=\"console-prompt\" class=\"advanced-prompt\" rows=\"4\" placeholder=\"prompt (required for generate)\"></textarea>
+            <pre id=\"console-log\">Console idle.</pre>
+          </div>
+        </details>
 
         <table>
           <thead>
@@ -570,6 +740,10 @@ async def index() -> str:
       const catalogFit = document.getElementById('catalog-fit');
       const statusDot = document.getElementById('status-dot');
       const statusText = document.getElementById('status-text');
+      const consoleOp = document.getElementById('console-op');
+      const consoleModel = document.getElementById('console-model');
+      const consolePrompt = document.getElementById('console-prompt');
+      const consoleLog = document.getElementById('console-log');
       const MAX_POINTS = 80;
       let catalogCache = [];
       let hostRamGb = null;
@@ -594,6 +768,13 @@ async def index() -> str:
           i += 1;
         }
         return `${v.toFixed(2)} ${units[i]}`;
+      }
+
+      function percent(part, whole) {
+        const p = Number(part);
+        const w = Number(whole);
+        if (!Number.isFinite(p) || !Number.isFinite(w) || w <= 0) return '-';
+        return `${Math.max(0, (p / w) * 100).toFixed(1)}%`;
       }
 
       function fmtDate(ts) {
@@ -722,9 +903,6 @@ async def index() -> str:
         const data = await r.json();
         catalogCache = data.items || [];
         hostRamGb = data.host_ram_gb || hostRamGb;
-        if (hostRamGb) {
-          setText('m-host-ram', `Host RAM profile: ${hostRamGb} GB`);
-        }
         renderCatalogRows();
       }
 
@@ -734,15 +912,39 @@ async def index() -> str:
 
         statusDot.className = m.ollama_up ? 'dot up' : 'dot';
         statusText.textContent = m.ollama_up ? 'Ollama online' : 'Ollama unavailable';
+        hostRamGb = m.host_ram_gb || hostRamGb;
+        const hostRamBytes = (hostRamGb || 0) * 1024 * 1024 * 1024;
+        const loadedNames = (m.loaded_names || []).join(', ') || 'none';
 
         setText('m-models', String(m.models_total ?? '-'));
         setText('m-store', bytes(m.models_store_bytes));
         setText('m-loaded', String(m.loaded_models ?? '-'));
-        setText('m-loaded-names', (m.loaded_names || []).join(', ') || 'none');
+        setText('m-loaded-sub', `${m.loaded_models ?? 0} / ${m.max_loaded_models ?? '-'} max \u00b7 ${loadedNames}`);
         setText('m-latency', m.tags_latency_ms >= 0 ? `${m.tags_latency_ms} ms` : '-');
+        setText('m-latency-sub', `/api/tags \u00b7 parallel ${m.num_parallel ?? '-'}`);
         setText('m-ram', bytes(m.loaded_ram_bytes));
+        setText('m-ram-sub', `model resident set \u00b7 ${percent(m.loaded_ram_bytes, hostRamBytes)} of host`);
         setText('m-vram', bytes(m.loaded_vram_bytes));
+        setText('m-vram-sub', `accelerator memory \u00b7 ${percent(m.loaded_vram_bytes, hostRamBytes)} of host (est)`);
         setText('m-jobs', `${m.actions?.active_jobs ?? 0} active / ${m.actions?.completed_jobs ?? 0} done`);
+        setText('m-jobs-sub', `queue cap ${m.max_queue ?? '-'}`);
+        setText(
+          'm-last-sub',
+          `keep_alive ${m.keep_alive ?? '-'} \u00b7 boost ${m.boost_active ? 'on' : 'off'}`
+        );
+        setText(
+          'hw-cpu',
+          `${m.cpu_logical ?? '-'} logical / ${m.cpu_physical ?? '-'} physical (${m.cpu_perf ?? '-'} perf) \u00b7 ${m.machine || 'arm64'}`
+        );
+        setText(
+          'hw-gpu',
+          `${m.gpu_name || 'Apple Silicon GPU'} (${m.gpu_backend || 'Metal'}${m.gpu_cores && m.gpu_cores !== 'unknown' ? `, ${m.gpu_cores} cores` : ''})`
+        );
+        setText('hw-ram', `${hostRamGb || '-'} GB \u00b7 ${m.hw_model || 'model unknown'}`);
+        setText(
+          'hw-runtime',
+          `parallel ${m.num_parallel ?? '-'} \u00b7 max loaded ${m.max_loaded_models ?? '-'} \u00b7 queue ${m.max_queue ?? '-'} \u00b7 keep_alive ${m.keep_alive ?? '-'}${m.boost_active ? ' \u00b7 boost ON' : ''}`
+        );
 
         pushMetric('models', m.models_total ?? 0);
         pushMetric('store', m.models_store_bytes ?? 0);
@@ -760,6 +962,32 @@ async def index() -> str:
           setText('m-last', `${lastAction} ${lastModel} (${lastMs} ms)`);
         } else {
           setText('m-last', '-');
+        }
+      }
+
+      async function runConsole() {
+        const op = (consoleOp.value || '').trim();
+        const model = (consoleModel.value || '').trim();
+        const prompt = consolePrompt.value || '';
+
+        consoleLog.textContent = `Running ${op}...`;
+        try {
+          const r = await fetch('/api/console', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ op, model, prompt })
+          });
+          const data = await r.json();
+          if (!r.ok) {
+            throw new Error(JSON.stringify(data));
+          }
+          consoleLog.textContent = JSON.stringify(data, null, 2);
+          if (model && !modelInput.value.trim()) {
+            modelInput.value = model;
+          }
+          await refreshMetrics();
+        } catch (e) {
+          consoleLog.textContent = `console failed: ${e}`;
         }
       }
 
@@ -798,6 +1026,17 @@ async def index() -> str:
         }
       }
 
+      function updateConsoleForm() {
+        const op = consoleOp.value;
+        const needsPrompt = op === 'generate';
+        const needsModel = op === 'show' || op === 'generate' || op === 'pull';
+        consolePrompt.style.display = needsPrompt ? 'block' : 'none';
+        consolePrompt.placeholder = needsPrompt ? 'prompt (required for generate)' : '';
+        consoleModel.placeholder = needsModel
+          ? 'model (required for this operation)'
+          : 'model (optional)';
+      }
+
       catalogInput.addEventListener('input', () => {
         if (catalogTimer) clearTimeout(catalogTimer);
         catalogTimer = setTimeout(() => {
@@ -808,6 +1047,8 @@ async def index() -> str:
       });
       catalogClass.addEventListener('change', renderCatalogRows);
       catalogFit.addEventListener('change', renderCatalogRows);
+      consoleOp.addEventListener('change', updateConsoleForm);
+      updateConsoleForm();
 
       refreshAll();
       setInterval(refreshMetrics, 1500);

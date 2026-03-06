@@ -15,9 +15,11 @@ services:
     container_name: localai-model-admin
     ports:
       - "3010:8081"
+    env_file:
+      - path: .localai.env
+        required: false
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - LOCALAI_HOST_RAM_GB=${LOCALAI_HOST_RAM_GB:-32}
     restart: unless-stopped
 
 volumes:
