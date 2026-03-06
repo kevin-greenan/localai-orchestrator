@@ -44,15 +44,24 @@ def _warmup(cfg: StackConfig) -> int:
         print("no warmup_model configured")
         return 0
 
-    ok, msg = ollama_generate(
-        f"{cfg.ollama.host}:{cfg.ollama.port}",
-        cfg.ollama.warmup_model,
-        cfg.ollama.warmup_prompt,
-    )
-    if not ok:
-        raise RuntimeError(f"warmup failed: {msg}")
-    print("warmup complete")
-    return 0
+    host = f"{cfg.ollama.host}:{cfg.ollama.port}"
+    deadline = time.monotonic() + 60.0
+    last_msg = "unknown error"
+
+    while time.monotonic() < deadline:
+        ok, msg = ollama_generate(host, cfg.ollama.warmup_model, cfg.ollama.warmup_prompt)
+        if ok:
+            print("warmup complete")
+            return 0
+        last_msg = msg
+        # Missing model will not self-recover; fail fast with actionable guidance.
+        if "not found" in msg.lower() and cfg.ollama.warmup_model.lower() in msg.lower():
+            raise RuntimeError(
+                f"warmup failed: {msg}. Pull the model first or run `localai up --sync-models --warmup`."
+            )
+        time.sleep(1.0)
+
+    raise RuntimeError(f"warmup failed after retries: {last_msg}")
 
 
 def _wait_for_ollama(cfg: StackConfig, timeout_s: float = 45.0, interval_s: float = 1.0) -> None:

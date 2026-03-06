@@ -519,6 +519,15 @@ async def index() -> str:
           <button onclick=\"refreshAll()\">Refresh</button>
         </div>
 
+        <pre id=\"log\">Ready.</pre>
+
+        <table>
+          <thead>
+            <tr><th>Model</th><th>Size</th><th>Modified</th></tr>
+          </thead>
+          <tbody id=\"models\"></tbody>
+        </table>
+
         <div class=\"catalog\">
           <div class=\"catalog-head\">
             <h2>Browse Catalog</h2>
@@ -549,15 +558,6 @@ async def index() -> str:
             <tbody id=\"catalog\"></tbody>
           </table>
         </div>
-
-        <pre id=\"log\">Ready.</pre>
-
-        <table>
-          <thead>
-            <tr><th>Model</th><th>Size</th><th>Modified</th></tr>
-          </thead>
-          <tbody id=\"models\"></tbody>
-        </table>
       </div>
     </div>
     <script>
