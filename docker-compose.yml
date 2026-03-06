@@ -1,0 +1,24 @@
+services:
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: openwebui
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    volumes:
+      - openwebui-data:/app/backend/data
+    restart: unless-stopped
+  model-admin:
+    build:
+      context: ./model_admin
+    container_name: localai-model-admin
+    ports:
+      - "3010:8081"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - LOCALAI_HOST_RAM_GB=${LOCALAI_HOST_RAM_GB:-32}
+    restart: unless-stopped
+
+volumes:
+  openwebui-data:

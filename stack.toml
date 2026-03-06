@@ -1,0 +1,32 @@
+[project]
+name = "localai-mac"
+
+[native.ollama]
+enabled = true
+label = "com.localai.ollama"
+host = "127.0.0.1"
+port = 11434
+models = ["llama3.2:3b"]
+warmup_model = "llama3.2:3b"
+warmup_prompt = "Reply with exactly: warm"
+
+# Optional manual overrides (if set, they win when tuning.respect_user_values = true):
+# keep_alive = "45m"
+# num_parallel = 6
+# max_loaded_models = 3
+
+# Extra knobs can be injected here if needed.
+# Example:
+# [native.ollama.env]
+# OLLAMA_MAX_QUEUE = "64"
+
+[tuning]
+enabled = true
+respect_user_values = true
+
+[docker]
+compose_file = "docker-compose.yml"
+services = ["openwebui", "model-admin"]
+
+[health]
+openwebui_url = "http://127.0.0.1:3000/health"
