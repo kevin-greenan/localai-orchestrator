@@ -28,7 +28,7 @@ Docker on macOS does not give Linux containers native Apple Metal acceleration. 
 ## Quick Start
 
 ```bash
-cd localai_orchestrator
+cd localai-orchestrator
 python3 -m venv .venv
 source .venv/bin/activate
 pip install .
@@ -37,20 +37,57 @@ localai doctor
 localai up --sync-models --warmup
 ```
 
+First run note:
+
+- `--sync-models` pulls every model listed in `stack.toml` (`[native.ollama].models`).
+- If a model is not local yet, the first run will download it and may take a while.
+- If a model is already local, pull is usually quick and acts like an update check.
+
 If your environment has Python 3.14 entrypoint quirks, use:
 
 ```bash
 python -m localai.cli <command>
 ```
 
-## Common Commands
+## Usage
+
+### Start Modes
 
 ```bash
+# Full startup (recommended first run)
 localai up --sync-models --warmup
+
+# Start stack without pulling models
+localai up --warmup
+
+# Start only services (no sync, no warmup)
+localai up
+```
+
+What each flag does:
+
+- `--sync-models`: runs `ollama pull` for all configured models in `stack.toml`
+- `--warmup`: runs one test inference on `warmup_model` after Ollama is reachable
+
+### Stop Modes
+
+```bash
+# Stop Docker services only (OpenWebUI + Model Admin)
+localai down
+
+# Stop Docker services and native Ollama launch agent
+localai down --stop-native
+```
+
+Use `localai down` when you want to keep native Ollama running for direct CLI/API use.
+Use `localai down --stop-native` when you want everything fully stopped.
+
+### Status, Logs, and Health
+
+```bash
 localai status
 localai logs --tail 200
-localai down
-localai down --stop-native
+localai doctor
 ```
 
 ## Web UI Endpoints

@@ -4,6 +4,7 @@ import argparse
 import json
 import platform
 import sys
+import time
 from pathlib import Path
 
 from .config import DEFAULT_STACK, StackConfig, load_stack
@@ -54,6 +55,23 @@ def _warmup(cfg: StackConfig) -> int:
     return 0
 
 
+def _wait_for_ollama(cfg: StackConfig, timeout_s: float = 45.0, interval_s: float = 1.0) -> None:
+    url = f"http://{cfg.ollama.host}:{cfg.ollama.port}/api/tags"
+    deadline = time.monotonic() + timeout_s
+    last_msg = "unknown error"
+
+    while time.monotonic() < deadline:
+        ok, msg = http_ok(url, timeout=2.0)
+        if ok:
+            return
+        last_msg = msg
+        time.sleep(interval_s)
+
+    raise RuntimeError(
+        f"ollama did not become ready within {int(timeout_s)}s at {url}: {last_msg}"
+    )
+
+
 def _write_runtime_env(cfg: StackConfig, tuning: TuningResult) -> None:
     env_path = Path(cfg.root) / ".localai.env"
     host_ram = tuning.specs.mem_gb if tuning and tuning.specs.mem_gb else 32
@@ -71,6 +89,8 @@ def _cmd_up(args: argparse.Namespace) -> int:
         if tuning.enabled and tuning.applied:
             print(f"autotune applied: {json.dumps(tuning.applied)}")
         start_ollama_launch_agent(cfg)
+        if args.sync_models or args.warmup:
+            _wait_for_ollama(cfg)
         if args.sync_models:
             _models_sync(cfg)
         if args.warmup:
