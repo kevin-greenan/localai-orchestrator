@@ -188,24 +188,6 @@ Security note:
 - The console is intentionally allowlisted to Ollama operations only (not a host shell).
 - If you expose Model Admin beyond localhost, set Basic Auth credentials and use a trusted reverse proxy/TLS.
 
-## Release Smoke Checklist
-
-Run these before sharing publicly:
-
-1. Fresh venv install:
-   - `python3 -m venv .venv && source .venv/bin/activate`
-   - `pip install setuptools wheel`
-   - `pip install .`
-2. Startup and health:
-   - `localai doctor`
-   - `localai up --sync-models --warmup`
-   - Verify OpenWebUI and Model Admin load.
-3. Model Admin sanity:
-   - Check hardware/runtime bar and stats cards render.
-   - Run one Advanced Console `generate` request.
-4. Shutdown path:
-   - `localai down --stop-native`
-
 ## Troubleshooting
 
 - `docker daemon permission denied`:
