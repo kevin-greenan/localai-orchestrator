@@ -205,6 +205,9 @@ Security note:
 - Model Admin returns `401 Unauthorized`:
   - You likely enabled `MODEL_ADMIN_USERNAME`/`MODEL_ADMIN_PASSWORD` in `.env`.
   - Open `http://127.0.0.1:3010` and authenticate with those credentials.
+- `Bootstrap failed: 125: Domain does not support specified action`:
+  - Update to the latest release; launchctl domain fallback (`gui/<uid>` -> `user/<uid>`) is included.
+  - If it still occurs, run from a normal logged-in desktop session (not a restricted/background shell context).
 
 ## Project Structure
 

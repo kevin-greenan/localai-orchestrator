@@ -70,6 +70,12 @@ def build_ollama_env(cfg: StackConfig) -> dict[str, str]:
     return env
 
 
+def _launchctl_domains(uid: str) -> list[str]:
+    # `gui/<uid>` is common in desktop sessions, while some newer/session-specific
+    # environments only accept `user/<uid>`.
+    return [f"gui/{uid}", f"user/{uid}"]
+
+
 def start_ollama_launch_agent(cfg: StackConfig) -> None:
     if not is_macos():
         raise RuntimeError("This orchestrator is macOS-only for native Ollama acceleration.")
@@ -91,22 +97,35 @@ def start_ollama_launch_agent(cfg: StackConfig) -> None:
     plist_path.write_text(_plist_text(label, bin_path, env, stdout_path, stderr_path), encoding="utf-8")
 
     uid = str(os.getuid())
-    run(["launchctl", "bootout", f"gui/{uid}", str(plist_path)])
-    run(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)], check=True)
-    run(["launchctl", "enable", f"gui/{uid}/{label}"])
-    run(["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"], check=True)
+    errors: list[str] = []
+    for domain in _launchctl_domains(uid):
+        run(["launchctl", "bootout", domain, str(plist_path)])
+        b = run(["launchctl", "bootstrap", domain, str(plist_path)])
+        if b.code != 0:
+            errors.append(f"{domain} bootstrap failed: {b.stderr or b.stdout}")
+            continue
+        run(["launchctl", "enable", f"{domain}/{label}"])
+        k = run(["launchctl", "kickstart", "-k", f"{domain}/{label}"])
+        if k.code == 0:
+            return
+        errors.append(f"{domain} kickstart failed: {k.stderr or k.stdout}")
+
+    detail = " | ".join(errors) if errors else "unknown launchctl error"
+    raise RuntimeError(f"could not start launch agent in gui/user domains: {detail}")
 
 
 def stop_ollama_launch_agent(cfg: StackConfig) -> None:
     label = cfg.ollama.label
     plist_path = launch_agent_path(label)
     uid = str(os.getuid())
-    run(["launchctl", "bootout", f"gui/{uid}", str(plist_path)])
+    for domain in _launchctl_domains(uid):
+        run(["launchctl", "bootout", domain, str(plist_path)])
 
 
 def launch_agent_status(label: str) -> str:
     uid = str(os.getuid())
-    res = run(["launchctl", "print", f"gui/{uid}/{label}"])
-    if res.code == 0:
-        return "running"
+    for domain in _launchctl_domains(uid):
+        res = run(["launchctl", "print", f"{domain}/{label}"])
+        if res.code == 0:
+            return "running"
     return "stopped"
