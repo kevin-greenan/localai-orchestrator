@@ -4,27 +4,24 @@ macOS-first orchestration for Apple Silicon: run Ollama natively (Metal path) an
 
 ## Documentation Map
 
-- Core setup + CLI usage: this README
-- Model Admin details: `docs/MODEL_ADMIN.md`
-- Runtime operations + troubleshooting: `docs/OPERATIONS.md`
+- Quick start and project overview: this README
+- CLI flags and startup modes: `docs/CLI.md`
+- Networking, exposure, and endpoint behavior: `docs/NETWORKING.md`
+- Stack configuration, RAG, web-search, and tuning: `docs/STACK_CONFIGURATION.md`
+- Model Admin behavior and debug console: `docs/MODEL_ADMIN.md`
+- Runtime files and troubleshooting: `docs/OPERATIONS.md`
 
-## What it does
+## What It Does
 
 - Starts `ollama serve` as a macOS `launchd` service
 - Runs OpenWebUI + Model Admin + Qdrant via Docker Compose
-- Optional web-search add-ons: SearxNG (+ Redis cache)
-- Auto-tunes Ollama + Qdrant + web-search defaults from host hardware on startup
+- Optionally enables web-search add-ons (SearxNG + Redis)
+- Auto-tunes runtime defaults from detected host hardware
 - Provides one CLI for lifecycle, checks, model sync, and warmup
-- Exposes a Model Admin web UI with:
-  - pull/update/delete model actions
-  - live utilization cards + sparklines
-  - RAG health strip (preset, qdrant status, collections, indexed vectors, qdrant latency)
-  - searchable catalog with one-click pull
-  - class and fit filters (`chat`, `reasoning`, `code`, `embed`, `vision`)
 
-## Why this architecture
+## Why This Architecture
 
-Docker on macOS does not give Linux containers native Apple Metal acceleration. This project keeps Ollama on the macOS host for performance, while still using Compose for everything else.
+Docker on macOS does not give Linux containers native Apple Metal acceleration. This project keeps Ollama on the macOS host for performance, while using Compose for UI and supporting services.
 
 ## Requirements
 
@@ -53,244 +50,33 @@ source .venv/bin/activate
 pip install --no-build-isolation .
 ```
 
-First run note:
+First run notes:
 
-- `--sync-models` pulls every model listed in `stack.toml` (`[native.ollama].models`).
-- If a model is not local yet, the first run will download it and may take a while.
-- If a model is already local, pull is usually quick and acts like an update check.
+- `--sync-models` pulls all models listed in `stack.toml` (`[native.ollama].models`).
+- First-time model downloads can take a while.
+- Python 3.14 users should prefer `pip install .` or `pip install --no-build-isolation .` (avoid editable install in this repo).
 
-Python 3.14 note:
-
-- Prefer `pip install .` or `pip install --no-build-isolation .` for this project.
-- Avoid `pip install -e .` here; it can produce a CLI entrypoint that does not resolve the `localai` module reliably.
-
-## Public-Safe Defaults
-
-By default, Docker ports are bound to loopback only:
-
-- `127.0.0.1:3000` (OpenWebUI)
-- `127.0.0.1:3010` (Model Admin)
-- `127.0.0.1:6333` (Qdrant)
-- `127.0.0.1:8082` (SearxNG, only when `[web].enabled=true`)
-
-If you run `localai up --expose` (or `localai up --expose <port>`), services bind to all interfaces:
-
-- `0.0.0.0:80` (OpenWebUI)
-- `0.0.0.0:3010` (Model Admin)
-- `0.0.0.0:6333` (Qdrant)
-- `0.0.0.0:8082` (SearxNG, only when `[web].enabled=true`)
-
-Optional hardening config lives in `.env` (template: `.env.example`):
-
-- `LOCALAI_BIND_IP=127.0.0.1` (recommended)
-- `LOCALAI_QDRANT_PORT=6333`
-- `MODEL_ADMIN_USERNAME=...`
-- `MODEL_ADMIN_PASSWORD=...`
-- `QDRANT_API_KEY=...` (optional)
-- `LOCALAI_RAG_EMBED_MODEL=nomic-embed-text` (optional OpenWebUI embedding model override)
-
-If both Model Admin credentials are set, the Model Admin UI/API requires HTTP Basic Auth.
-
-## Usage
-
-### Start Modes
+## Common Commands
 
 ```bash
-# Full startup (recommended first run)
+# Start full stack
 localai up --sync-models --warmup
 
-# Full startup with web search enabled for this run
-localai up --web-search --sync-models --warmup
-
-# Higher-utilization mode (good for larger Apple Silicon machines)
-localai up --boost --warmup
-
-# Higher-quality retrieval profile (more context, slower)
-localai up --rag-preset deep --warmup
-
-# Expose services on all interfaces (OpenWebUI defaults to :80)
-localai up --expose --sync-models --warmup
-
-# Expose services on all interfaces with custom OpenWebUI port
-localai up --expose 8080 --sync-models --warmup
-
-# Start only Model Admin (skip OpenWebUI)
-localai up --no-webui --warmup
-
-# Start stack without pulling models
-localai up --warmup
-
-# Start only services (no sync, no warmup)
-localai up
-```
-
-What each flag does:
-
-- `--sync-models`: runs `ollama pull` for all configured models in `stack.toml`
-- `--warmup`: runs one test inference on `warmup_model` after Ollama is reachable
-- `--expose [PORT]`: binds services to `0.0.0.0` (OpenWebUI on `:PORT`, default `80`; Model Admin on `:3010`)
-- `--no-webui`: starts `model-admin` + `qdrant` only (OpenWebUI and web-search add-ons are not started)
-- `--web-search`: enables web search for this run and starts `searxng` + `redis`
-- `--boost`: applies a higher-utilization runtime profile (parallelism/queue/keep-alive, and model residency when RAM allows)
-  - Also applies more aggressive Qdrant and web-search profiles unless manually overridden
-- `--rag-preset {fast,deep}`: sets OpenWebUI RAG defaults
-  - `fast` (default): lower latency (`top_k=2`, `chunk_size=800`, no hybrid search)
-  - `deep`: higher recall/context (`top_k=5`, `chunk_size=1200`, hybrid search on)
-
-Flag compatibility notes:
-
-- `--web-search` cannot be combined with `--no-webui`.
-- `--rag-preset` cannot be combined with `--no-webui`.
-- `--expose` can be combined with `--no-webui` to expose Model Admin and Qdrant; when OpenWebUI is disabled, the optional `PORT` value is ignored.
-
-### Stop Modes
-
-```bash
-# Stop Docker services only (OpenWebUI + Model Admin + Qdrant)
+# Stop docker services
 localai down
 
-# Stop Docker services and native Ollama launch agent
-localai down --stop-native
-```
-
-Use `localai down` when you want to keep native Ollama running for direct CLI/API use.
-Use `localai down --stop-native` when you want everything fully stopped.
-
-### Status, Logs, and Health
-
-```bash
+# Status and diagnostics
 localai status
-localai logs --tail 200
 localai doctor
+localai logs --tail 200
 ```
 
-## Web UI Endpoints
-
-- Default (`localai up`):
-  - OpenWebUI: <http://127.0.0.1:3000>
-  - Model Admin: <http://127.0.0.1:3010>
-  - Qdrant API: <http://127.0.0.1:6333>
-  - SearxNG: <http://127.0.0.1:8082> (only when web search is enabled)
-- Exposed mode (`localai up --expose [PORT]`):
-  - OpenWebUI: `http://<host-ip>:<PORT>` (defaults to `80` when omitted)
-  - Model Admin: `http://<host-ip>:3010`
-  - Qdrant API: `http://<host-ip>:6333`
-  - SearxNG: `http://<host-ip>:8082` (only when web search is enabled)
-
-## RAG Storage (Qdrant)
-
-Qdrant is included as a default service for local RAG/vector storage.
-
-- Container: `localai-qdrant`
-- API port: `6333` (or `LOCALAI_QDRANT_PORT`)
-- Data persistence: Docker named volume `qdrant-data`
-- Optional auth: set `QDRANT_API_KEY` in `.env`
-- Auto-tuned at startup from host specs, with boost-aware profile on `localai up --boost`
-- Manual overrides available in `stack.toml` under `[rag.qdrant]`
-
-OpenWebUI is pre-wired for RAG out of the box:
-
-- `VECTOR_DB=qdrant`
-- `QDRANT_URI=http://qdrant:6333`
-- `RAG_EMBEDDING_ENGINE=ollama`
-- `RAG_EMBEDDING_MODEL=nomic-embed-text` (override with `LOCALAI_RAG_EMBED_MODEL`)
-- `RAG_TOP_K`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, and `ENABLE_RAG_HYBRID_SEARCH` are set from the selected `rag` preset (`fast` by default)
-
-Default model sync includes both chat and embedding models:
-
-- `llama3.2:3b`
-- `nomic-embed-text`
-
-Persistence note:
-
-- Qdrant collections/vectors persist across container rebuilds/restarts.
-- Data is removed only if you explicitly remove volumes (for example `docker compose down -v`).
-
-## Web Search (SearxNG + Redis)
-
-Web search is optional and disabled by default.
-
-Enable in `stack.toml`:
-
-```toml
-[web]
-enabled = true
-engine = "searxng"
-searxng_query_url = "http://searxng:8080/search?q=<query>&format=json"
-
-[web.redis]
-maxmemory_mb = 512
-```
-
-Behavior:
-
-- When `[web].enabled = true`, `localai up` includes `searxng` automatically.
-- When web search is enabled, `localai up` includes `redis` automatically.
-- `localai up --no-webui` skips OpenWebUI and web-search add-ons.
-- OpenWebUI env wiring is auto-generated in `.localai.env`.
-
-## Configuration
-
-Main config: `stack.toml`
-
-Key sections:
-
-- `[native.ollama]`: host/port, models, warmup defaults, optional manual runtime overrides
-- `[docker]`: compose file and service list
-- `[rag]`: RAG preset (`fast` or `deep`) used for OpenWebUI retrieval defaults
-- `[rag.qdrant]`: qdrant enable/disable and optional manual tuning overrides
-- `[web]`: web-search enablement and OpenWebUI/SearxNG defaults
-- `[web.redis]`: Redis cache sizing policy for web-search workloads
-- `[health]`: health-check URLs
-- `[tuning]`: auto-tuning behavior
-
-Health URLs include:
-
-- `openwebui_url`
-- `qdrant_url`
-
-### Auto-Tuning
-
-On `localai up`, host hardware is detected and these are auto-derived:
-
-- `num_parallel`
-- `max_loaded_models`
-- `keep_alive`
-- `OLLAMA_MAX_QUEUE`
-- Qdrant `default_segment_number`
-- Qdrant `memmap_threshold_kb`
-- Qdrant `indexing_threshold_kb`
-- Qdrant `hnsw_m`
-- Qdrant `hnsw_ef_construct`
-- Web search `result_count`
-- Web search request/loader concurrency
-- Web search request timeout
-- Redis `maxmemory_mb` (when web search is enabled)
-
-Default policy:
-
-```toml
-[tuning]
-enabled = true
-respect_user_values = true
-```
-
-If you set manual values in `[native.ollama]`, `[rag.qdrant]`, `[web]`, or `[web.redis]` and keep `respect_user_values = true`, your values win.
-
-RAG preset persistence note:
-
-- OpenWebUI stores retrieval settings in its own persistent DB.
-- `--rag-preset` (or `[rag].preset`) applies startup defaults, mainly for fresh setups.
-- If you already changed retrieval settings in the OpenWebUI UI, those saved values may override env defaults until you change/reset them in UI.
-
-## More Docs
-
-- Runtime files and troubleshooting: `docs/OPERATIONS.md`
-- Model Admin behavior and debug console: `docs/MODEL_ADMIN.md`
+For full command/flag behavior, see `docs/CLI.md`.
 
 ## Project Structure
 
 - `localai/`: Python CLI + orchestration logic
 - `model_admin/`: FastAPI app for model management UI
+- `docs/`: operational and feature documentation
 - `docker-compose.yml`: OpenWebUI + model-admin + qdrant services
 - `stack.toml`: user-tunable stack configuration
