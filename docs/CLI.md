@@ -69,3 +69,24 @@ localai status
 localai logs --tail 200
 localai doctor
 ```
+
+## Benchmarking and Metrics
+
+```bash
+# Quick baseline (5 runs, JSON output)
+localai benchmark
+
+# Compare model variants with more samples
+localai benchmark --model llama3.2:3b --iterations 10
+localai benchmark --model qwen2.5:7b --iterations 10
+
+# Keep prompt fixed when comparing profile or config changes
+localai benchmark --prompt "Summarize this repo in one sentence." --iterations 8
+```
+
+`localai benchmark` prints JSON including:
+
+- service health probe latencies (`ollama`, and active docker services)
+- per-run inference wall time
+- token throughput from Ollama (`tokens_per_second`)
+- summary stats (`avg`, `p50`, `p95`, `min`, `max`)

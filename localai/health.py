@@ -29,3 +29,22 @@ def ollama_generate(host: str, model: str, prompt: str, timeout: float = 20.0) -
             return False, f"status={resp.status} body={body[:200]}"
     except Exception as e:  # noqa: BLE001
         return False, str(e)
+
+
+def ollama_generate_json(
+    host: str, model: str, prompt: str, timeout: float = 60.0
+) -> tuple[bool, dict[str, object], str]:
+    url = f"http://{host}/api/generate"
+    payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode("utf-8")
+    req = Request(url, method="POST", data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+            if not (200 <= resp.status < 300):
+                return False, {}, f"status={resp.status} body={body[:200]}"
+            parsed = json.loads(body)
+            if not isinstance(parsed, dict):
+                return False, {}, "ollama response was not a JSON object"
+            return True, parsed, ""
+    except Exception as e:  # noqa: BLE001
+        return False, {}, str(e)

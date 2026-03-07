@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 import math
 import platform
 import re
 import secrets
+import statistics
 import sys
 import time
 from pathlib import Path
 
 from .config import DEFAULT_STACK, StackConfig, load_stack
 from .docker import compose_down, compose_ps, compose_up, has_docker
-from .health import http_ok, ollama_generate
+from .health import http_ok, ollama_generate, ollama_generate_json
 from .macos import (
     is_apple_silicon,
     is_macos,
@@ -403,13 +405,14 @@ def _write_runtime_env(
     expose_enabled: bool = False,
     expose_port: int = 80,
     docker_services: list[str] | None = None,
+    openwebui_enabled: bool = True,
 ) -> None:
     env_path = Path(cfg.root) / ".localai.env"
     runtime_env = _read_runtime_env(Path(cfg.root))
     host_ram = tuning.specs.mem_gb if tuning and tuning.specs.mem_gb else 32
     max_queue = cfg.ollama.env.get("OLLAMA_MAX_QUEUE", "160")
     bind_ip = "0.0.0.0" if expose_enabled else "127.0.0.1"
-    openwebui_port = str(expose_port if expose_enabled else 3000)
+    openwebui_port = str(expose_port if (expose_enabled and openwebui_enabled) else 3000)
     model_admin_port = "3010"
     qdrant_port = "6333"
     qdrant_values, _ = _qdrant_tuned_values(cfg, tuning, boost_enabled=boost_enabled)
@@ -519,6 +522,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
         expose_enabled=expose_active,
         expose_port=expose_port,
         docker_services=cfg.docker.services,
+        openwebui_enabled=(not args.no_webui),
     )
     print(f"rag preset: {rag_preset}")
     if cfg.ollama.enabled:
@@ -648,6 +652,103 @@ def _cmd_logs(args: argparse.Namespace) -> int:
     return res.code
 
 
+def _percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    idx = max(0, min(len(ordered) - 1, int(math.ceil((q / 100.0) * len(ordered)) - 1)))
+    return ordered[idx]
+
+
+def _probe_http(url: str, timeout: float) -> dict[str, object]:
+    started = time.perf_counter()
+    ok, msg = http_ok(url, timeout=timeout)
+    latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+    return {"ok": ok, "latency_ms": latency_ms, "detail": msg[:200]}
+
+
+def _cmd_benchmark(args: argparse.Namespace) -> int:
+    cfg, _ = _load_cfg_with_tuning(args.stack)
+    if args.iterations < 1:
+        raise RuntimeError("--iterations must be at least 1")
+
+    model = args.model or cfg.ollama.warmup_model or (cfg.ollama.models[0] if cfg.ollama.models else "")
+    if not model:
+        raise RuntimeError("No benchmark model configured; set warmup_model or pass --model")
+
+    host = f"{cfg.ollama.host}:{cfg.ollama.port}"
+    active_services = set(_effective_services(cfg))
+
+    health: dict[str, dict[str, object]] = {
+        "ollama": _probe_http(f"http://{host}/api/tags", timeout=args.timeout),
+    }
+    if "openwebui" in active_services:
+        health["openwebui"] = _probe_http(_effective_openwebui_url(cfg), timeout=args.timeout)
+    if "qdrant" in active_services:
+        health["qdrant"] = _probe_http(_effective_qdrant_url(cfg), timeout=args.timeout)
+    if "searxng" in active_services:
+        health["searxng"] = _probe_http(_effective_searxng_url(cfg), timeout=args.timeout)
+
+    samples: list[dict[str, object]] = []
+    latencies: list[float] = []
+    token_rates: list[float] = []
+    failures = 0
+
+    for idx in range(args.iterations):
+        started = time.perf_counter()
+        ok, payload, err = ollama_generate_json(host, model, args.prompt, timeout=args.timeout)
+        wall_ms = round((time.perf_counter() - started) * 1000.0, 2)
+        sample: dict[str, object] = {"run": idx + 1, "ok": ok, "latency_ms": wall_ms}
+        if ok:
+            eval_count = int(payload.get("eval_count", 0) or 0)
+            eval_duration_ns = int(payload.get("eval_duration", 0) or 0)
+            total_duration_ns = int(payload.get("total_duration", 0) or 0)
+            prompt_eval_count = int(payload.get("prompt_eval_count", 0) or 0)
+            prompt_eval_duration_ns = int(payload.get("prompt_eval_duration", 0) or 0)
+            load_duration_ns = int(payload.get("load_duration", 0) or 0)
+            token_s = round((eval_count / (eval_duration_ns / 1_000_000_000.0)), 2) if eval_duration_ns > 0 else 0.0
+            latencies.append(wall_ms)
+            if token_s > 0:
+                token_rates.append(token_s)
+            sample.update(
+                {
+                    "eval_count": eval_count,
+                    "eval_duration_ms": round(eval_duration_ns / 1_000_000.0, 2),
+                    "total_duration_ms": round(total_duration_ns / 1_000_000.0, 2),
+                    "load_duration_ms": round(load_duration_ns / 1_000_000.0, 2),
+                    "prompt_eval_count": prompt_eval_count,
+                    "prompt_eval_duration_ms": round(prompt_eval_duration_ns / 1_000_000.0, 2),
+                    "tokens_per_second": token_s,
+                }
+            )
+        else:
+            failures += 1
+            sample["error"] = err
+        samples.append(sample)
+
+    summary = {
+        "iterations": args.iterations,
+        "successful_runs": len(latencies),
+        "failed_runs": failures,
+        "latency_ms_avg": round(statistics.fmean(latencies), 2) if latencies else 0.0,
+        "latency_ms_min": round(min(latencies), 2) if latencies else 0.0,
+        "latency_ms_p50": round(_percentile(latencies, 50), 2) if latencies else 0.0,
+        "latency_ms_p95": round(_percentile(latencies, 95), 2) if latencies else 0.0,
+        "latency_ms_max": round(max(latencies), 2) if latencies else 0.0,
+        "tokens_per_second_avg": round(statistics.fmean(token_rates), 2) if token_rates else 0.0,
+    }
+    result = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "prompt_chars": len(args.prompt),
+        "health": health,
+        "summary": summary,
+        "samples": samples,
+    }
+    print(json.dumps(result, indent=2))
+    return 1 if failures == args.iterations else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="localai", description="macOS-first orchestrator for native Ollama + Docker stack")
     p.add_argument("--stack", default=DEFAULT_STACK, help="Path to stack.toml")
@@ -715,6 +816,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub_logs.add_argument("--follow", action="store_true", help="Stream logs")
     sub_logs.add_argument("--tail", type=int, default=100)
     sub_logs.set_defaults(func=_cmd_logs)
+
+    sub_bench = sub.add_parser("benchmark", help="Run quick local performance probes and Ollama inference benchmark")
+    sub_bench.add_argument("--model", help="Model to benchmark (defaults: warmup_model, then first configured model)")
+    sub_bench.add_argument("--prompt", default="Summarize why local-first AI stacks are useful in one sentence.")
+    sub_bench.add_argument("--iterations", type=int, default=5, help="Number of benchmark inference runs")
+    sub_bench.add_argument("--timeout", type=float, default=60.0, help="Per-request timeout in seconds")
+    sub_bench.set_defaults(func=_cmd_benchmark)
 
     return p
 
