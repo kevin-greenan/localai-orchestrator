@@ -6,29 +6,38 @@ Main config file: `stack.toml`
 
 ```mermaid
 flowchart LR
-  cli["localai CLI"] -->|"localai up/down/status"| launchd["launchd service"]
-  cli -->|"docker compose"| compose["Docker Compose stack"]
-  cli -->|"writes runtime env"| env[".localai.env"]
+  cli["localai CLI"]
+  launchd["launchd service"]
+  compose["Docker Compose stack"]
+  env[".localai.env"]
+  ollama["Ollama (native host)"]
 
-  launchd --> ollama["Ollama (native host)"]
+  cli -->|"start/stop/status"| launchd
+  cli -->|"compose lifecycle"| compose
+  cli -->|"writes"| env
+  launchd -->|"runs"| ollama
+  env -->|"runtime variables"| compose
+```
 
-  compose --> openwebui["OpenWebUI container"]
-  compose --> admin["Model Admin container"]
-  compose --> qdrant["Qdrant container"]
-  compose --> searxng["SearxNG container (optional)"]
-  compose --> redis["Redis container (optional)"]
+```mermaid
+flowchart LR
+  subgraph docker["Docker Compose stack"]
+    openwebui["OpenWebUI container"]
+    admin["Model Admin container"]
+    qdrant["Qdrant container"]
+    subgraph webaddons["Web Search add-ons (optional)"]
+      searxng["SearxNG container"]
+      redis["Redis container"]
+    end
+  end
 
-  env --> openwebui
-  env --> admin
-  env --> qdrant
-  env --> searxng
-  env --> redis
+  ollama["Ollama (native host)"]
 
   openwebui -->|"LLM + embeddings"| ollama
   admin -->|"model ops + status"| ollama
   openwebui -->|"vector retrieval"| qdrant
   openwebui -->|"web search requests"| searxng
-  searxng --> redis
+  searxng -->|"cache"| redis
 ```
 
 ## RAG Storage (Qdrant)
