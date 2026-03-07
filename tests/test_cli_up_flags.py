@@ -101,6 +101,28 @@ class UpFlagTests(unittest.TestCase):
             self.assertIn("redis", services)
             self.assertEqual(env["LOCALAI_WEB_ENABLED"], "true")
 
+    def test_image_gen_flag_enables_image_services(self):
+        args = self._args("--image-gen")
+        cfg = self._cfg()
+        cfg.image_gen.enabled = False
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg.root = Path(td)
+            with (
+                patch.object(cli, "_load_cfg_with_tuning", return_value=(cfg, _fake_tuning())),
+                patch.object(cli, "compose_up"),
+                patch.object(cli, "start_ollama_launch_agent"),
+            ):
+                rc = cli._cmd_up(args)
+
+            self.assertEqual(rc, 0)
+            env = _read_env(Path(td) / ".localai.env")
+            services = set(env["LOCALAI_DOCKER_SERVICES"].split(","))
+            self.assertIn("image-gen", services)
+            self.assertIn("minio", services)
+            self.assertIn("image-redis", services)
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_ENABLED"], "1")
+
     def test_expose_port_is_ignored_when_no_webui(self):
         args = self._args("--no-webui", "--expose", "8080")
         cfg = self._cfg()
@@ -149,7 +171,7 @@ class UpFlagTests(unittest.TestCase):
             env = _read_env(Path(td) / ".localai.env")
             self.assertEqual(env["LOCALAI_VISION_ENABLED"], "1")
             self.assertEqual(env["LOCALAI_VISION_DEFAULT_MODEL"], "llava:latest")
-            self.assertEqual(env["LOCALAI_VISION_MAX_IMAGE_MB"], "12")
+            self.assertEqual(env["LOCALAI_VISION_MAX_IMAGE_MB"], "16")
             self.assertEqual(env["LOCALAI_VISION_BENCHMARK_DATASET"], "tests/fixtures/vision/smoke.jsonl")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_ENABLED"], "1")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_PROVIDER"], "comfyui")
@@ -163,6 +185,7 @@ class UpFlagTests(unittest.TestCase):
             self.assertEqual(env["LOCALAI_OPENWEBUI_IMAGE_GENERATION_MODEL"], "localai-imagegen")
             self.assertEqual(env["LOCALAI_OPENWEBUI_IMAGES_OPENAI_API_BASE_URL"], "http://image-gen:8090/v1")
             self.assertEqual(env["LOCALAI_OPENWEBUI_IMAGE_SIZE"], "1024x1024")
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_REDIS_MAXMEMORY_MB"], "512")
             services = set(env["LOCALAI_DOCKER_SERVICES"].split(","))
             self.assertIn("image-gen", services)
             self.assertIn("minio", services)

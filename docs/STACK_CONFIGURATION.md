@@ -120,6 +120,8 @@ Behavior:
 - When `[image_gen].enabled = true`, `localai up` includes `image-gen`, `minio`, and `image-redis`.
 - OpenWebUI is wired to call `image-gen` using OpenAI-compatible image APIs (`/v1/images/generations`).
 - Generated artifacts are persisted through the configured artifact store (MinIO by default).
+- Vision/image-gen settings are auto-tuned from detected hardware unless explicitly overridden.
+- `localai up --boost` applies a higher-utilization profile (larger image budgets, more queue/concurrency where hardware allows).
 
 ## Key Sections in `stack.toml`
 

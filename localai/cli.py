@@ -265,6 +265,109 @@ def _web_tuned_values(cfg: StackConfig, tuning: TuningResult, *, boost_enabled: 
     return values, applied
 
 
+def _vision_recommended(mem_gb: int) -> dict[str, int]:
+    if mem_gb >= 128:
+        return {"max_image_mb": 32}
+    if mem_gb >= 64:
+        return {"max_image_mb": 24}
+    if mem_gb >= 32:
+        return {"max_image_mb": 16}
+    return {"max_image_mb": 10}
+
+
+def _vision_boosted(base: dict[str, int], mem_gb: int) -> dict[str, int]:
+    cap = 40 if mem_gb >= 64 else 24
+    return {"max_image_mb": min(cap, base["max_image_mb"] + 6)}
+
+
+def _vision_tuned_values(cfg: StackConfig, tuning: TuningResult, *, boost_enabled: bool) -> tuple[dict[str, int], dict[str, str]]:
+    vision = cfg.vision
+    base = _vision_recommended(tuning.specs.mem_gb)
+    target = _vision_boosted(base, tuning.specs.mem_gb) if boost_enabled else base
+    values = {"max_image_mb": vision.max_image_mb}
+    user_set = {"max_image_mb": vision.user_set_max_image_mb}
+    applied: dict[str, str] = {}
+    for k, v in target.items():
+        if cfg.tuning.respect_user_values and user_set[k]:
+            continue
+        if values[k] != v:
+            values[k] = v
+            applied[f"vision.{k}"] = str(v)
+    return values, applied
+
+
+def _image_gen_recommended(mem_gb: int, perf_cores: int) -> dict[str, int | str]:
+    perf_hint = perf_cores if perf_cores > 0 else 4
+    if mem_gb >= 128:
+        return {
+            "concurrency": min(6, max(2, perf_hint // 2)),
+            "queue_timeout_seconds": 900,
+            "redis_maxmemory_mb": 1024,
+            "openwebui_image_size": "1536x1536",
+        }
+    if mem_gb >= 64:
+        return {
+            "concurrency": min(4, max(2, perf_hint // 2)),
+            "queue_timeout_seconds": 600,
+            "redis_maxmemory_mb": 768,
+            "openwebui_image_size": "1280x1280",
+        }
+    if mem_gb >= 32:
+        return {
+            "concurrency": 2,
+            "queue_timeout_seconds": 450,
+            "redis_maxmemory_mb": 512,
+            "openwebui_image_size": "1024x1024",
+        }
+    return {
+        "concurrency": 1,
+        "queue_timeout_seconds": 300,
+        "redis_maxmemory_mb": 256,
+        "openwebui_image_size": "768x768",
+    }
+
+
+def _image_gen_boosted(base: dict[str, int | str], mem_gb: int, perf_cores: int) -> dict[str, int | str]:
+    perf_hint = perf_cores if perf_cores > 0 else 4
+    size_order = ["768x768", "1024x1024", "1280x1280", "1536x1536"]
+    size = str(base["openwebui_image_size"])
+    idx = size_order.index(size) if size in size_order else 1
+    if mem_gb >= 64 and idx < len(size_order) - 1:
+        size = size_order[idx + 1]
+    return {
+        "concurrency": min(8, max(int(base["concurrency"]) + 1, perf_hint // 2)),
+        "queue_timeout_seconds": min(1200, int(base["queue_timeout_seconds"]) + 180),
+        "redis_maxmemory_mb": min(2048, int(base["redis_maxmemory_mb"]) + 256),
+        "openwebui_image_size": size,
+    }
+
+
+def _image_gen_tuned_values(cfg: StackConfig, tuning: TuningResult, *, boost_enabled: bool) -> tuple[dict[str, int | str], dict[str, str]]:
+    image_gen = cfg.image_gen
+    base = _image_gen_recommended(tuning.specs.mem_gb, tuning.specs.perf_cores)
+    target = _image_gen_boosted(base, tuning.specs.mem_gb, tuning.specs.perf_cores) if boost_enabled else base
+    values: dict[str, int | str] = {
+        "concurrency": image_gen.concurrency,
+        "queue_timeout_seconds": image_gen.queue_timeout_seconds,
+        "redis_maxmemory_mb": 256,
+        "openwebui_image_size": image_gen.openwebui_image_size,
+    }
+    user_set = {
+        "concurrency": image_gen.user_set_concurrency,
+        "queue_timeout_seconds": image_gen.user_set_queue_timeout_seconds,
+        "redis_maxmemory_mb": False,
+        "openwebui_image_size": image_gen.user_set_openwebui_image_size,
+    }
+    applied: dict[str, str] = {}
+    for k, v in target.items():
+        if cfg.tuning.respect_user_values and user_set[k]:
+            continue
+        if values[k] != v:
+            values[k] = v
+            applied[f"image_gen.{k}"] = str(v)
+    return values, applied
+
+
 def _rag_preset_values(preset: str) -> dict[str, str]:
     mode = preset if preset in {"fast", "deep"} else "fast"
     if mode == "deep":
@@ -467,6 +570,8 @@ def _write_runtime_env(
     qdrant_port = "6333"
     qdrant_values, _ = _qdrant_tuned_values(cfg, tuning, boost_enabled=boost_enabled)
     web_values, _ = _web_tuned_values(cfg, tuning, boost_enabled=boost_enabled)
+    vision_values, _ = _vision_tuned_values(cfg, tuning, boost_enabled=boost_enabled)
+    image_gen_values, _ = _image_gen_tuned_values(cfg, tuning, boost_enabled=boost_enabled)
     rag_values = _rag_preset_values(rag_preset)
     active_services = docker_services or cfg.docker.services
     redis_url = "redis://redis:6379/0" if cfg.web.enabled else ""
@@ -525,25 +630,25 @@ def _write_runtime_env(
         f"LOCALAI_QDRANT_HNSW_EF_CONSTRUCT={qdrant_values['hnsw_ef_construct']}",
         f"LOCALAI_VISION_ENABLED={'1' if cfg.vision.enabled else '0'}",
         f"LOCALAI_VISION_DEFAULT_MODEL={cfg.vision.default_model}",
-        f"LOCALAI_VISION_MAX_IMAGE_MB={cfg.vision.max_image_mb}",
+        f"LOCALAI_VISION_MAX_IMAGE_MB={vision_values['max_image_mb']}",
         f"LOCALAI_VISION_BENCHMARK_DATASET={cfg.vision.benchmark_dataset}",
         f"LOCALAI_IMAGE_GEN_ENABLED={'1' if cfg.image_gen.enabled else '0'}",
         f"LOCALAI_IMAGE_GEN_PROVIDER={cfg.image_gen.provider}",
-        f"LOCALAI_IMAGE_GEN_CONCURRENCY={cfg.image_gen.concurrency}",
-        f"LOCALAI_IMAGE_GEN_QUEUE_TIMEOUT_SECONDS={cfg.image_gen.queue_timeout_seconds}",
+        f"LOCALAI_IMAGE_GEN_CONCURRENCY={image_gen_values['concurrency']}",
+        f"LOCALAI_IMAGE_GEN_QUEUE_TIMEOUT_SECONDS={image_gen_values['queue_timeout_seconds']}",
         f"LOCALAI_IMAGE_GEN_ARTIFACT_STORE={cfg.image_gen.artifact_store}",
         f"LOCALAI_IMAGE_GEN_BACKEND_URL={cfg.image_gen.backend_url}",
         f"LOCALAI_IMAGE_GEN_A1111_URL={cfg.image_gen.a1111_url}",
         f"LOCALAI_IMAGE_GEN_PORT={image_gen_port}",
         f"LOCALAI_IMAGE_GEN_PUBLIC_BASE_URL={image_gen_public}",
         "LOCALAI_IMAGE_GEN_REDIS_URL=redis://image-redis:6379/0",
-        "LOCALAI_IMAGE_GEN_REDIS_MAXMEMORY_MB=256",
+        f"LOCALAI_IMAGE_GEN_REDIS_MAXMEMORY_MB={image_gen_values['redis_maxmemory_mb']}",
         f"LOCALAI_OPENWEBUI_ENABLE_IMAGE_GENERATION={'True' if cfg.image_gen.enabled else 'False'}",
         "LOCALAI_OPENWEBUI_IMAGE_GENERATION_ENGINE=openai",
         f"LOCALAI_OPENWEBUI_IMAGE_GENERATION_MODEL={cfg.image_gen.openwebui_model}",
         f"LOCALAI_OPENWEBUI_IMAGES_OPENAI_API_BASE_URL={cfg.image_gen.backend_url.rstrip('/')}/v1",
         "LOCALAI_OPENWEBUI_IMAGES_OPENAI_API_KEY=localai",
-        f"LOCALAI_OPENWEBUI_IMAGE_SIZE={cfg.image_gen.openwebui_image_size}",
+        f"LOCALAI_OPENWEBUI_IMAGE_SIZE={image_gen_values['openwebui_image_size']}",
         f"LOCALAI_MINIO_ROOT_USER={minio_user}",
         f"LOCALAI_MINIO_ROOT_PASSWORD={minio_password}",
         f"LOCALAI_MINIO_PORT={minio_port}",
@@ -559,6 +664,8 @@ def _cmd_up(args: argparse.Namespace) -> int:
     cfg, tuning = _load_cfg_with_tuning(args.stack)
     if args.web_search:
         cfg.web.enabled = True
+    if args.image_gen:
+        cfg.image_gen.enabled = True
     expose_active = args.expose is not None
     expose_port = int(args.expose) if expose_active else 80
     if expose_active and not (1 <= expose_port <= 65535):
@@ -574,7 +681,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
         raise RuntimeError("web.engine must be 'searxng' when web search is enabled")
     if cfg.web.enabled and "<query>" not in cfg.web.searxng_query_url:
         raise RuntimeError("web.searxng_query_url must contain the <query> placeholder")
-    boost_active = bool(args.boost and cfg.ollama.enabled)
+    boost_active = bool(args.boost)
     if args.boost and cfg.ollama.enabled:
         boost_applied = _apply_boost_profile(cfg, tuning)
         if boost_applied:
@@ -585,6 +692,12 @@ def _cmd_up(args: argparse.Namespace) -> int:
     _, qdrant_applied = _qdrant_tuned_values(cfg, tuning, boost_enabled=boost_active)
     if cfg.rag.qdrant.enabled and qdrant_applied:
         print(f"qdrant tuning applied: {json.dumps(qdrant_applied)}")
+    _, vision_applied = _vision_tuned_values(cfg, tuning, boost_enabled=boost_active)
+    if cfg.vision.enabled and vision_applied:
+        print(f"vision tuning applied: {json.dumps(vision_applied)}")
+    _, image_gen_applied = _image_gen_tuned_values(cfg, tuning, boost_enabled=boost_active)
+    if cfg.image_gen.enabled and image_gen_applied:
+        print(f"image_gen tuning applied: {json.dumps(image_gen_applied)}")
     if args.no_webui:
         cfg.web.enabled = False
         cfg.docker.services = ["model-admin", "qdrant"]
@@ -928,6 +1041,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--web-search",
         action="store_true",
         help="Enable web search for this run (starts SearxNG + Redis with OpenWebUI). Incompatible with --no-webui.",
+    )
+    sub_up.add_argument(
+        "--image-gen",
+        action="store_true",
+        help="Enable image-generation lane for this run (starts image-gen + MinIO + image-redis).",
     )
     sub_up.add_argument(
         "--boost",

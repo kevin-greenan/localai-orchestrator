@@ -9,6 +9,9 @@ localai up --sync-models --warmup
 # Full startup with web search enabled for this run
 localai up --web-search --sync-models --warmup
 
+# Full startup with image generation lane enabled for this run
+localai up --image-gen --sync-models --warmup
+
 # Higher-utilization mode (good for larger Apple Silicon machines)
 localai up --boost --warmup
 
@@ -38,6 +41,7 @@ localai up
 - `--expose [PORT]`: binds services to `0.0.0.0` (OpenWebUI on `:PORT`, default `80`; Model Admin on `:3010`)
 - `--no-webui`: starts `model-admin` + `qdrant` only (OpenWebUI and web-search add-ons are not started)
 - `--web-search`: enables web search for this run and starts `searxng` + `redis`
+- `--image-gen`: enables image generation lane for this run and starts `image-gen` + `minio` + `image-redis`
 - `--boost`: applies a higher-utilization runtime profile (parallelism/queue/keep-alive and model residency when RAM allows)
 - `--rag-preset {fast,deep}`: sets OpenWebUI RAG defaults
   - `fast` (default): lower latency (`top_k=2`, `chunk_size=800`, no hybrid search)
@@ -112,3 +116,4 @@ Vision command notes:
 - Vision commands require `[vision].enabled = true` in `stack.toml`
 - If `[image_gen].enabled = true`, `localai up` also starts `image-gen`, `minio`, and `image-redis`
 - OpenWebUI image generation uses `image-gen` via OpenAI image API compatibility (`/v1/images/generations`)
+- Vision/image-gen defaults are auto-tuned from detected hardware, and `--boost` raises these limits when safe.

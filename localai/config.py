@@ -93,6 +93,7 @@ class VisionConfig:
     default_model: str
     max_image_mb: int
     benchmark_dataset: str
+    user_set_max_image_mb: bool
 
 
 @dataclass(slots=True)
@@ -106,6 +107,9 @@ class ImageGenConfig:
     a1111_url: str
     openwebui_model: str
     openwebui_image_size: str
+    user_set_concurrency: bool
+    user_set_queue_timeout_seconds: bool
+    user_set_openwebui_image_size: bool
 
 
 @dataclass(slots=True)
@@ -144,6 +148,11 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
     image_gen_raw = raw.get("image_gen", {})
     preset_raw = str(rag_raw.get("preset", "fast")).strip().lower()
     preset = preset_raw if preset_raw in {"fast", "deep"} else "fast"
+
+    def _is_user_override(section: dict[str, object], key: str, default: object) -> bool:
+        if key not in section:
+            return False
+        return section.get(key) != default
 
     ollama = OllamaConfig(
         enabled=bool(ollama_raw.get("enabled", True)),
@@ -224,10 +233,11 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
         default_model=str(vision_raw.get("default_model", "llava:latest")).strip(),
         max_image_mb=int(vision_raw.get("max_image_mb", 10)),
         benchmark_dataset=str(vision_raw.get("benchmark_dataset", "tests/fixtures/vision/smoke.jsonl")).strip(),
+        user_set_max_image_mb=_is_user_override(vision_raw, "max_image_mb", 10),
     )
     image_gen = ImageGenConfig(
         enabled=bool(image_gen_raw.get("enabled", False)),
-        provider=str(image_gen_raw.get("provider", "none")).strip(),
+        provider=str(image_gen_raw.get("provider", "mock")).strip(),
         concurrency=int(image_gen_raw.get("concurrency", 1)),
         queue_timeout_seconds=int(image_gen_raw.get("queue_timeout_seconds", 300)),
         artifact_store=str(image_gen_raw.get("artifact_store", "minio")).strip(),
@@ -235,6 +245,9 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
         a1111_url=str(image_gen_raw.get("a1111_url", "")).strip(),
         openwebui_model=str(image_gen_raw.get("openwebui_model", "localai-imagegen")).strip(),
         openwebui_image_size=str(image_gen_raw.get("openwebui_image_size", "1024x1024")).strip(),
+        user_set_concurrency=_is_user_override(image_gen_raw, "concurrency", 1),
+        user_set_queue_timeout_seconds=_is_user_override(image_gen_raw, "queue_timeout_seconds", 300),
+        user_set_openwebui_image_size=_is_user_override(image_gen_raw, "openwebui_image_size", "1024x1024"),
     )
 
     return StackConfig(
