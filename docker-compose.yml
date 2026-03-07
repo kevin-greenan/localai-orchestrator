@@ -79,9 +79,12 @@ services:
     environment:
       - INSTANCE_NAME=localai-searxng
       - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_SECRET=${LOCALAI_SEARXNG_SECRET:-}
       - UWSGI_WORKERS=${LOCALAI_SEARXNG_WORKERS:-2}
       - UWSGI_THREADS=${LOCALAI_SEARXNG_THREADS:-2}
       - SEARXNG_REDIS_URL=${LOCALAI_SEARXNG_REDIS_URL:-}
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml
     restart: unless-stopped
   redis:
     image: redis:7-alpine
