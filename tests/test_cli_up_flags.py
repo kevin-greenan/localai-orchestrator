@@ -101,6 +101,24 @@ class UpFlagTests(unittest.TestCase):
             self.assertIn("redis", services)
             self.assertEqual(env["LOCALAI_WEB_ENABLED"], "true")
 
+    def test_expose_port_is_ignored_when_no_webui(self):
+        args = self._args("--no-webui", "--expose", "8080")
+        cfg = self._cfg()
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg.root = Path(td)
+            with (
+                patch.object(cli, "_load_cfg_with_tuning", return_value=(cfg, _fake_tuning())),
+                patch.object(cli, "compose_up"),
+                patch.object(cli, "start_ollama_launch_agent"),
+            ):
+                rc = cli._cmd_up(args)
+
+            self.assertEqual(rc, 0)
+            env = _read_env(Path(td) / ".localai.env")
+            self.assertEqual(env["LOCALAI_OPENWEBUI_PORT"], "3000")
+            self.assertEqual(env["LOCALAI_BIND_IP"], "0.0.0.0")
+
 
 if __name__ == "__main__":
     unittest.main()
