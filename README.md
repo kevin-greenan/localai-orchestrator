@@ -77,6 +77,7 @@ Optional hardening config lives in `.env` (template: `.env.example`):
 - `MODEL_ADMIN_USERNAME=...`
 - `MODEL_ADMIN_PASSWORD=...`
 - `QDRANT_API_KEY=...` (optional)
+- `LOCALAI_RAG_EMBED_MODEL=nomic-embed-text` (optional OpenWebUI embedding model override)
 
 If both Model Admin credentials are set, the Model Admin UI/API requires HTTP Basic Auth.
 
@@ -119,7 +120,7 @@ What each flag does:
 ### Stop Modes
 
 ```bash
-# Stop Docker services only (OpenWebUI + Model Admin)
+# Stop Docker services only (OpenWebUI + Model Admin + Qdrant)
 localai down
 
 # Stop Docker services and native Ollama launch agent
@@ -158,6 +159,18 @@ Qdrant is included as a default service for local RAG/vector storage.
 - Optional auth: set `QDRANT_API_KEY` in `.env`
 - Auto-tuned at startup from host specs, with boost-aware profile on `localai up --boost`
 - Manual overrides available in `stack.toml` under `[rag.qdrant]`
+
+OpenWebUI is pre-wired for RAG out of the box:
+
+- `VECTOR_DB=qdrant`
+- `QDRANT_URI=http://qdrant:6333`
+- `RAG_EMBEDDING_ENGINE=ollama`
+- `RAG_EMBEDDING_MODEL=nomic-embed-text` (override with `LOCALAI_RAG_EMBED_MODEL`)
+
+Default model sync includes both chat and embedding models:
+
+- `llama3.2:3b`
+- `nomic-embed-text`
 
 Persistence note:
 

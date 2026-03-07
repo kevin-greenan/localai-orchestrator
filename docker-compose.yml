@@ -2,10 +2,18 @@ services:
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: openwebui
+    depends_on:
+      - qdrant
     ports:
       - "${LOCALAI_BIND_IP:-127.0.0.1}:${LOCALAI_OPENWEBUI_PORT:-3000}:8080"
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - VECTOR_DB=qdrant
+      - QDRANT_URI=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - RAG_EMBEDDING_ENGINE=ollama
+      - RAG_EMBEDDING_MODEL=${LOCALAI_RAG_EMBED_MODEL:-nomic-embed-text}
+      - RAG_OLLAMA_BASE_URL=http://host.docker.internal:11434
     volumes:
       - openwebui-data:/app/backend/data
     restart: unless-stopped
