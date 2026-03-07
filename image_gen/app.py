@@ -17,7 +17,7 @@ from minio.error import S3Error
 from pydantic import BaseModel, Field
 
 
-PROVIDER = os.getenv("LOCALAI_IMAGE_GEN_PROVIDER", "mock").strip().lower() or "mock"
+PROVIDER = os.getenv("LOCALAI_IMAGE_GEN_PROVIDER", "automatic1111").strip().lower() or "automatic1111"
 ARTIFACT_STORE = os.getenv("LOCALAI_IMAGE_GEN_ARTIFACT_STORE", "filesystem").strip().lower() or "filesystem"
 DATA_DIR = Path(os.getenv("LOCALAI_IMAGE_GEN_DATA_DIR", "/data")).resolve()
 PUBLIC_BASE_URL = os.getenv("LOCALAI_IMAGE_GEN_PUBLIC_BASE_URL", "http://127.0.0.1:8090").strip() or "http://127.0.0.1:8090"
@@ -81,16 +81,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _safe_text(value: str) -> str:
-    return (
-        value.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
-
-
 def _persist_jobs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     payload = {job_id: job.model_dump() for job_id, job in JOBS.items()}
@@ -129,28 +119,7 @@ def _parse_size(size: str) -> tuple[int, int]:
 def _mime_ext(mime: str) -> str:
     if mime == "image/png":
         return "png"
-    return "svg"
-
-
-def _render_svg(req: GenerateRequest) -> bytes:
-    prompt = _safe_text(req.prompt[:180])
-    negative = _safe_text(req.negative_prompt[:120]) if req.negative_prompt else "(none)"
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="{req.width}" height="{req.height}" viewBox="0 0 {req.width} {req.height}">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#0f172a" />
-      <stop offset="100%" stop-color="#1d4ed8" />
-    </linearGradient>
-  </defs>
-  <rect width="100%" height="100%" fill="url(#bg)" />
-  <rect x="24" y="24" width="{req.width - 48}" height="{req.height - 48}" rx="18" fill="#020617" fill-opacity="0.72" stroke="#38bdf8" stroke-opacity="0.4" />
-  <text x="44" y="78" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="24">localai image-gen preview</text>
-  <text x="44" y="124" fill="#bae6fd" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI" font-size="18">prompt: {prompt}</text>
-  <text x="44" y="160" fill="#93c5fd" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI" font-size="16">negative: {negative}</text>
-  <text x="44" y="{req.height - 52}" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="14">provider=mock steps={req.steps} seed={req.seed if req.seed is not None else "auto"}</text>
-</svg>
-"""
-    return svg.encode("utf-8")
+    raise RuntimeError(f"unsupported artifact mime type: {mime}")
 
 
 async def _generate_with_a1111(req: GenerateRequest) -> tuple[str, bytes]:
@@ -183,9 +152,9 @@ async def _generate_with_a1111(req: GenerateRequest) -> tuple[str, bytes]:
 
 
 async def _provider_generate(req: GenerateRequest) -> tuple[str, bytes]:
-    if PROVIDER in {"automatic1111", "a1111"}:
-        return await _generate_with_a1111(req)
-    return "image/svg+xml", _render_svg(req)
+    if PROVIDER not in {"automatic1111", "a1111"}:
+        raise RuntimeError(f"unsupported provider '{PROVIDER}'; supported providers: automatic1111")
+    return await _generate_with_a1111(req)
 
 
 def _init_minio() -> None:
@@ -298,18 +267,18 @@ async def _worker() -> None:
 
 
 async def _provider_ready() -> tuple[bool, str]:
-    if PROVIDER in {"automatic1111", "a1111"}:
-        if not A1111_BASE_URL:
-            return False, "LOCALAI_IMAGE_GEN_A1111_URL missing"
-        try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                resp = await client.get(f"{A1111_BASE_URL}/sdapi/v1/options")
-            if resp.status_code >= 400:
-                return False, f"automatic1111 returned {resp.status_code}"
-            return True, "ok"
-        except Exception as e:  # noqa: BLE001
-            return False, str(e)
-    return True, "ok"
+    if PROVIDER not in {"automatic1111", "a1111"}:
+        return False, f"unsupported provider '{PROVIDER}'"
+    if not A1111_BASE_URL:
+        return False, "LOCALAI_IMAGE_GEN_A1111_URL missing"
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(f"{A1111_BASE_URL}/sdapi/v1/options")
+        if resp.status_code >= 400:
+            return False, f"automatic1111 returned {resp.status_code}"
+        return True, "ok"
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
 
 
 @app.on_event("startup")

@@ -33,7 +33,7 @@ benchmark_dataset = "tests/fixtures/vision/smoke.jsonl"
 
 [image_gen]
 enabled = true
-provider = "comfyui"
+provider = "automatic1111"
 concurrency = 2
 queue_timeout_seconds = 450
 artifact_store = "minio"
@@ -53,7 +53,7 @@ openwebui_image_size = "1024x1024"
         self.assertEqual(cfg.vision.benchmark_dataset, "tests/fixtures/vision/smoke.jsonl")
 
         self.assertTrue(cfg.image_gen.enabled)
-        self.assertEqual(cfg.image_gen.provider, "comfyui")
+        self.assertEqual(cfg.image_gen.provider, "automatic1111")
         self.assertEqual(cfg.image_gen.concurrency, 2)
         self.assertEqual(cfg.image_gen.queue_timeout_seconds, 450)
         self.assertEqual(cfg.image_gen.artifact_store, "minio")

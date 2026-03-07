@@ -60,7 +60,7 @@ LOCALAI_VISION_DEFAULT_MODEL = os.getenv("LOCALAI_VISION_DEFAULT_MODEL", "llava:
 LOCALAI_VISION_MAX_IMAGE_MB = max(1, _env_int("LOCALAI_VISION_MAX_IMAGE_MB", 10))
 LOCALAI_VISION_BENCHMARK_DATASET = os.getenv("LOCALAI_VISION_BENCHMARK_DATASET", "tests/fixtures/vision/smoke.jsonl").strip()
 LOCALAI_IMAGE_GEN_ENABLED = os.getenv("LOCALAI_IMAGE_GEN_ENABLED", "0") == "1"
-LOCALAI_IMAGE_GEN_PROVIDER = os.getenv("LOCALAI_IMAGE_GEN_PROVIDER", "none").strip() or "none"
+LOCALAI_IMAGE_GEN_PROVIDER = os.getenv("LOCALAI_IMAGE_GEN_PROVIDER", "automatic1111").strip() or "automatic1111"
 LOCALAI_IMAGE_GEN_BACKEND_URL = os.getenv("LOCALAI_IMAGE_GEN_BACKEND_URL", "http://image-gen:8090").strip() or "http://image-gen:8090"
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333").rstrip("/")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()

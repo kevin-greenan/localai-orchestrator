@@ -681,6 +681,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
         raise RuntimeError("web.engine must be 'searxng' when web search is enabled")
     if cfg.web.enabled and "<query>" not in cfg.web.searxng_query_url:
         raise RuntimeError("web.searxng_query_url must contain the <query> placeholder")
+    _validate_image_gen_provider(cfg)
     boost_active = bool(args.boost)
     if args.boost and cfg.ollama.enabled:
         boost_applied = _apply_boost_profile(cfg, tuning)
@@ -808,6 +809,13 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         checks.append(("qdrant http", qdrant_ok, qdrant_msg[:120]))
     elif cfg.rag.qdrant.enabled:
         checks.append(("qdrant http", True, "skipped (service not enabled)"))
+    if cfg.image_gen.enabled:
+        provider_url = cfg.image_gen.a1111_url.strip().rstrip("/")
+        if provider_url:
+            p = _probe_http(f"{provider_url}/sdapi/v1/options", timeout=6.0)
+            checks.append(("automatic1111 provider", bool(p.get("ok")), str(p.get("detail", ""))[:120]))
+        else:
+            checks.append(("automatic1111 provider", False, "image_gen.a1111_url is not set"))
     if "image-gen" in active_services:
         image_gen_ok, image_gen_msg = http_ok(_effective_image_gen_url(cfg))
         checks.append(("image-gen http", image_gen_ok, image_gen_msg[:120]))
@@ -877,6 +885,21 @@ def _probe_http(url: str, timeout: float) -> dict[str, object]:
     ok, msg = http_ok(url, timeout=timeout)
     latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
     return {"ok": ok, "latency_ms": latency_ms, "detail": msg[:200]}
+
+
+def _validate_image_gen_provider(cfg: StackConfig, *, timeout_seconds: float = 6.0) -> None:
+    if not cfg.image_gen.enabled:
+        return
+    provider = cfg.image_gen.provider.strip().lower()
+    if provider not in {"automatic1111", "a1111"}:
+        raise RuntimeError("image_gen.provider must be 'automatic1111' (mock provider removed)")
+    if not cfg.image_gen.a1111_url.strip():
+        raise RuntimeError("image_gen.a1111_url is required when image generation is enabled")
+    base = cfg.image_gen.a1111_url.strip().rstrip("/")
+    probe = _probe_http(f"{base}/sdapi/v1/options", timeout_seconds)
+    if not bool(probe.get("ok")):
+        detail = str(probe.get("detail", "")).strip()
+        raise RuntimeError(f"automatic1111 endpoint check failed at {base}/sdapi/v1/options: {detail}")
 
 
 def _cmd_benchmark(args: argparse.Namespace) -> int:

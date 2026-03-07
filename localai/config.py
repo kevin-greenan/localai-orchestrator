@@ -237,7 +237,7 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
     )
     image_gen = ImageGenConfig(
         enabled=bool(image_gen_raw.get("enabled", False)),
-        provider=str(image_gen_raw.get("provider", "mock")).strip(),
+        provider=str(image_gen_raw.get("provider", "automatic1111")).strip(),
         concurrency=int(image_gen_raw.get("concurrency", 1)),
         queue_timeout_seconds=int(image_gen_raw.get("queue_timeout_seconds", 300)),
         artifact_store=str(image_gen_raw.get("artifact_store", "minio")).strip(),

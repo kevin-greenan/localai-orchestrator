@@ -65,7 +65,7 @@ benchmark_dataset = "tests/fixtures/vision/smoke.jsonl"
 
 [image_gen]
 enabled = false
-provider = "mock"
+provider = "automatic1111"
 concurrency = 1
 queue_timeout_seconds = 300
 artifact_store = "minio"

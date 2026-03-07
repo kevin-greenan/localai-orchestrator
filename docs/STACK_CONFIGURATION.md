@@ -107,10 +107,10 @@ Enable in `stack.toml`:
 ```toml
 [image_gen]
 enabled = true
-provider = "mock" # or "automatic1111"
+provider = "automatic1111"
 artifact_store = "minio"
 backend_url = "http://image-gen:8090"
-a1111_url = "" # required when provider = "automatic1111"
+a1111_url = "http://host.docker.internal:7860" # required
 openwebui_model = "localai-imagegen"
 openwebui_image_size = "1024x1024"
 ```

@@ -105,11 +105,14 @@ class UpFlagTests(unittest.TestCase):
         args = self._args("--image-gen")
         cfg = self._cfg()
         cfg.image_gen.enabled = False
+        cfg.image_gen.provider = "automatic1111"
+        cfg.image_gen.a1111_url = "http://host.docker.internal:7860"
 
         with tempfile.TemporaryDirectory() as td:
             cfg.root = Path(td)
             with (
                 patch.object(cli, "_load_cfg_with_tuning", return_value=(cfg, _fake_tuning())),
+                patch.object(cli, "_validate_image_gen_provider"),
                 patch.object(cli, "compose_up"),
                 patch.object(cli, "start_ollama_launch_agent"),
             ):
@@ -141,6 +144,17 @@ class UpFlagTests(unittest.TestCase):
             self.assertEqual(env["LOCALAI_OPENWEBUI_PORT"], "3000")
             self.assertEqual(env["LOCALAI_BIND_IP"], "0.0.0.0")
 
+    def test_image_gen_requires_a1111_url_when_enabled(self):
+        args = self._args("--image-gen")
+        cfg = self._cfg()
+        cfg.image_gen.enabled = True
+        cfg.image_gen.provider = "automatic1111"
+        cfg.image_gen.a1111_url = ""
+
+        with patch.object(cli, "_load_cfg_with_tuning", return_value=(cfg, _fake_tuning())):
+            with self.assertRaisesRegex(RuntimeError, "image_gen.a1111_url is required"):
+                cli._cmd_up(args)
+
     def test_runtime_env_includes_vision_and_image_gen_flags(self):
         args = self._args()
         cfg = self._cfg()
@@ -149,7 +163,7 @@ class UpFlagTests(unittest.TestCase):
         cfg.vision.max_image_mb = 12
         cfg.vision.benchmark_dataset = "tests/fixtures/vision/smoke.jsonl"
         cfg.image_gen.enabled = True
-        cfg.image_gen.provider = "comfyui"
+        cfg.image_gen.provider = "automatic1111"
         cfg.image_gen.concurrency = 2
         cfg.image_gen.queue_timeout_seconds = 450
         cfg.image_gen.artifact_store = "minio"
@@ -162,6 +176,7 @@ class UpFlagTests(unittest.TestCase):
             cfg.root = Path(td)
             with (
                 patch.object(cli, "_load_cfg_with_tuning", return_value=(cfg, _fake_tuning())),
+                patch.object(cli, "_validate_image_gen_provider"),
                 patch.object(cli, "compose_up"),
                 patch.object(cli, "start_ollama_launch_agent"),
             ):
@@ -174,7 +189,7 @@ class UpFlagTests(unittest.TestCase):
             self.assertEqual(env["LOCALAI_VISION_MAX_IMAGE_MB"], "16")
             self.assertEqual(env["LOCALAI_VISION_BENCHMARK_DATASET"], "tests/fixtures/vision/smoke.jsonl")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_ENABLED"], "1")
-            self.assertEqual(env["LOCALAI_IMAGE_GEN_PROVIDER"], "comfyui")
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_PROVIDER"], "automatic1111")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_CONCURRENCY"], "2")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_QUEUE_TIMEOUT_SECONDS"], "450")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_ARTIFACT_STORE"], "minio")
