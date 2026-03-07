@@ -480,6 +480,10 @@ def _cmd_up(args: argparse.Namespace) -> int:
     rag_preset = (args.rag_preset or cfg.rag.preset).strip().lower()
     if rag_preset not in {"fast", "deep"}:
         raise RuntimeError("--rag-preset must be one of: fast, deep")
+    if args.no_webui and args.web_search:
+        raise RuntimeError("--web-search cannot be combined with --no-webui")
+    if args.no_webui and args.rag_preset:
+        raise RuntimeError("--rag-preset cannot be combined with --no-webui")
     if cfg.web.enabled and cfg.web.engine != "searxng":
         raise RuntimeError("web.engine must be 'searxng' when web search is enabled")
     if cfg.web.enabled and "<query>" not in cfg.web.searxng_query_url:
@@ -496,6 +500,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
     if cfg.rag.qdrant.enabled and qdrant_applied:
         print(f"qdrant tuning applied: {json.dumps(qdrant_applied)}")
     if args.no_webui:
+        cfg.web.enabled = False
         cfg.docker.services = ["model-admin", "qdrant"]
     elif cfg.web.enabled:
         if "searxng" not in cfg.docker.services:
@@ -676,7 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub_up.add_argument(
         "--web-search",
         action="store_true",
-        help="Enable web search for this run (starts SearxNG + Redis with OpenWebUI).",
+        help="Enable web search for this run (starts SearxNG + Redis with OpenWebUI). Incompatible with --no-webui.",
     )
     sub_up.add_argument(
         "--boost",
@@ -686,7 +691,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub_up.add_argument(
         "--rag-preset",
         choices=["fast", "deep"],
-        help="RAG retrieval profile for OpenWebUI defaults (fast=lower latency, deep=more context/quality).",
+        help="RAG retrieval profile for OpenWebUI defaults (fast=lower latency, deep=more context/quality). Incompatible with --no-webui.",
     )
     sub_up.set_defaults(func=_cmd_up)
 
