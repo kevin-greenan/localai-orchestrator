@@ -6,7 +6,7 @@ macOS-first orchestration for Apple Silicon: run Ollama natively (Metal path) an
 
 - Starts `ollama serve` as a macOS `launchd` service
 - Runs OpenWebUI + Model Admin + Qdrant via Docker Compose
-- Auto-tunes Ollama defaults from host hardware on startup
+- Auto-tunes Ollama + Qdrant defaults from host hardware on startup
 - Provides one CLI for lifecycle, checks, model sync, and warmup
 - Exposes a Model Admin web UI with:
   - pull/update/delete model actions
@@ -98,7 +98,7 @@ localai up --expose --sync-models --warmup
 localai up --expose 8080 --sync-models --warmup
 
 # Start only Model Admin (skip OpenWebUI)
-localai up --admin-only --warmup
+localai up --no-webui --warmup
 
 # Start stack without pulling models
 localai up --warmup
@@ -112,8 +112,9 @@ What each flag does:
 - `--sync-models`: runs `ollama pull` for all configured models in `stack.toml`
 - `--warmup`: runs one test inference on `warmup_model` after Ollama is reachable
 - `--expose [PORT]`: binds services to `0.0.0.0` (OpenWebUI on `:PORT`, default `80`; Model Admin on `:3010`)
-- `--admin-only`: starts only `model-admin` via Docker Compose (OpenWebUI is not started)
+- `--no-webui`: starts `model-admin` + `qdrant` (OpenWebUI is not started)
 - `--boost`: applies a higher-utilization runtime profile (parallelism/queue/keep-alive, and model residency when RAM allows)
+  - Also applies a more aggressive Qdrant profile (segment/index/HNSW settings) unless manually overridden
 
 ### Stop Modes
 
@@ -155,6 +156,8 @@ Qdrant is included as a default service for local RAG/vector storage.
 - API port: `6333` (or `LOCALAI_QDRANT_PORT`)
 - Data persistence: Docker named volume `qdrant-data`
 - Optional auth: set `QDRANT_API_KEY` in `.env`
+- Auto-tuned at startup from host specs, with boost-aware profile on `localai up --boost`
+- Manual overrides available in `stack.toml` under `[rag.qdrant]`
 
 Persistence note:
 
@@ -169,8 +172,14 @@ Key sections:
 
 - `[native.ollama]`: host/port, models, warmup defaults, optional manual runtime overrides
 - `[docker]`: compose file and service list
+- `[rag.qdrant]`: qdrant enable/disable and optional manual tuning overrides
 - `[health]`: health-check URLs
 - `[tuning]`: auto-tuning behavior
+
+Health URLs include:
+
+- `openwebui_url`
+- `qdrant_url`
 
 ### Auto-Tuning
 
@@ -180,6 +189,11 @@ On `localai up`, host hardware is detected and these are auto-derived:
 - `max_loaded_models`
 - `keep_alive`
 - `OLLAMA_MAX_QUEUE`
+- Qdrant `default_segment_number`
+- Qdrant `memmap_threshold_kb`
+- Qdrant `indexing_threshold_kb`
+- Qdrant `hnsw_m`
+- Qdrant `hnsw_ef_construct`
 
 Default policy:
 
@@ -189,7 +203,7 @@ enabled = true
 respect_user_values = true
 ```
 
-If you set manual values in `[native.ollama]` and keep `respect_user_values = true`, your values win.
+If you set manual values in `[native.ollama]` or `[rag.qdrant]` and keep `respect_user_values = true`, your values win.
 
 ## Runtime Files
 

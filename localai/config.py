@@ -33,12 +33,33 @@ class DockerConfig:
 @dataclass(slots=True)
 class HealthConfig:
     openwebui_url: str
+    qdrant_url: str
 
 
 @dataclass(slots=True)
 class TuningConfig:
     enabled: bool
     respect_user_values: bool
+
+
+@dataclass(slots=True)
+class QdrantConfig:
+    enabled: bool
+    default_segment_number: int
+    memmap_threshold_kb: int
+    indexing_threshold_kb: int
+    hnsw_m: int
+    hnsw_ef_construct: int
+    user_set_default_segment_number: bool
+    user_set_memmap_threshold_kb: bool
+    user_set_indexing_threshold_kb: bool
+    user_set_hnsw_m: bool
+    user_set_hnsw_ef_construct: bool
+
+
+@dataclass(slots=True)
+class RagConfig:
+    qdrant: QdrantConfig
 
 
 @dataclass(slots=True)
@@ -49,6 +70,7 @@ class StackConfig:
     docker: DockerConfig
     health: HealthConfig
     tuning: TuningConfig
+    rag: RagConfig
 
 
 DEFAULT_STACK = "stack.toml"
@@ -65,6 +87,8 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
     docker_raw = raw.get("docker", {})
     health_raw = raw.get("health", {})
     tuning_raw = raw.get("tuning", {})
+    rag_raw = raw.get("rag", {})
+    qdrant_raw = rag_raw.get("qdrant", {})
 
     ollama = OllamaConfig(
         enabled=bool(ollama_raw.get("enabled", True)),
@@ -95,11 +119,26 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
 
     health = HealthConfig(
         openwebui_url=str(health_raw.get("openwebui_url", "http://127.0.0.1:3000/health")),
+        qdrant_url=str(health_raw.get("qdrant_url", "http://127.0.0.1:6333/healthz")),
     )
     tuning = TuningConfig(
         enabled=bool(tuning_raw.get("enabled", True)),
         respect_user_values=bool(tuning_raw.get("respect_user_values", True)),
     )
+    qdrant = QdrantConfig(
+        enabled=bool(qdrant_raw.get("enabled", True)),
+        default_segment_number=int(qdrant_raw.get("default_segment_number", 2)),
+        memmap_threshold_kb=int(qdrant_raw.get("memmap_threshold_kb", 100000)),
+        indexing_threshold_kb=int(qdrant_raw.get("indexing_threshold_kb", 50000)),
+        hnsw_m=int(qdrant_raw.get("hnsw_m", 24)),
+        hnsw_ef_construct=int(qdrant_raw.get("hnsw_ef_construct", 100)),
+        user_set_default_segment_number="default_segment_number" in qdrant_raw,
+        user_set_memmap_threshold_kb="memmap_threshold_kb" in qdrant_raw,
+        user_set_indexing_threshold_kb="indexing_threshold_kb" in qdrant_raw,
+        user_set_hnsw_m="hnsw_m" in qdrant_raw,
+        user_set_hnsw_ef_construct="hnsw_ef_construct" in qdrant_raw,
+    )
+    rag = RagConfig(qdrant=qdrant)
 
     return StackConfig(
         name=str(project.get("name", "localai")),
@@ -108,4 +147,5 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
         docker=docker,
         health=health,
         tuning=tuning,
+        rag=rag,
     )

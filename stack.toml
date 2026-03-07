@@ -28,5 +28,16 @@ respect_user_values = true
 compose_file = "docker-compose.yml"
 services = ["openwebui", "model-admin", "qdrant"]
 
+[rag.qdrant]
+enabled = true
+
+# Optional manual overrides (if set, they win when tuning.respect_user_values = true):
+# default_segment_number = 2
+# memmap_threshold_kb = 100000
+# indexing_threshold_kb = 50000
+# hnsw_m = 24
+# hnsw_ef_construct = 100
+
 [health]
 openwebui_url = "http://127.0.0.1:3000/health"
+qdrant_url = "http://127.0.0.1:6333/healthz"
