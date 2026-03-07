@@ -127,6 +127,67 @@ class ModelAdminEndpointTests(unittest.TestCase):
         self.assertGreater(payload["summary"]["tokens_per_second_avg"], 0)
         self.assertEqual(len(payload["samples"]), 3)
 
+    def test_vision_analyze_requires_feature_flag(self):
+        with patch.object(admin, "LOCALAI_VISION_ENABLED", False):
+            resp = self.client.post(
+                "/api/vision/analyze",
+                json={"model": "llava:latest", "prompt": "describe", "image_url": "https://example.com/a.png"},
+            )
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("vision lane disabled", resp.json().get("detail", ""))
+
+    def test_vision_analyze_returns_stub_payload_when_enabled(self):
+        with patch.object(admin, "LOCALAI_VISION_ENABLED", True):
+            resp = self.client.post(
+                "/api/vision/analyze",
+                json={"model": "llava:latest", "prompt": "describe", "image_url": "https://example.com/a.png"},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["status"], "stub")
+        self.assertEqual(payload["model"], "llava:latest")
+        self.assertEqual(payload["image_source"], "url")
+
+    def test_vision_analyze_rejects_non_vision_model(self):
+        with patch.object(admin, "LOCALAI_VISION_ENABLED", True):
+            resp = self.client.post(
+                "/api/vision/analyze",
+                json={"model": "llama3.2:3b", "prompt": "describe", "image_url": "https://example.com/a.png"},
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("does not appear vision-capable", resp.json().get("detail", ""))
+
+    def test_vision_smoke_stub_returns_skipped_check(self):
+        with patch.object(admin, "LOCALAI_VISION_ENABLED", True):
+            resp = self.client.post(
+                "/api/tests/vision-smoke",
+                json={"model": "llava:latest", "prompt": "ok", "image_url": "https://example.com/a.png"},
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["status"], "stub")
+        self.assertEqual(payload["summary"]["skipped"], 1)
+        self.assertTrue(payload["checks"][0]["skipped"])
+
+    def test_image_gen_health_reports_stub_status(self):
+        with (
+            patch.object(admin, "LOCALAI_IMAGE_GEN_ENABLED", True),
+            patch.object(admin, "LOCALAI_IMAGE_GEN_PROVIDER", "comfyui"),
+            patch.object(admin, "LOCALAI_IMAGE_GEN_BACKEND_URL", "http://image-gen:8090"),
+        ):
+            resp = self.client.get("/api/image-gen/health")
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["status"], "stub")
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(payload["provider"], "comfyui")
+        self.assertEqual(payload["backend_url"], "http://image-gen:8090")
+
 
 if __name__ == "__main__":
     unittest.main()

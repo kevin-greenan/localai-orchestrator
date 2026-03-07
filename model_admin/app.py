@@ -54,6 +54,13 @@ LOCALAI_WEB_ENABLED = _env_bool("LOCALAI_WEB_ENABLED", False)
 LOCALAI_SEARXNG_QUERY_URL = os.getenv("LOCALAI_SEARXNG_QUERY_URL", "http://searxng:8080/search?q=<query>&format=json").strip()
 LOCALAI_WEB_REDIS_MAXMEMORY_MB = max(1, _env_int("LOCALAI_WEB_REDIS_MAXMEMORY_MB", 256))
 LOCALAI_SEARXNG_REDIS_URL = os.getenv("LOCALAI_SEARXNG_REDIS_URL", "redis://redis:6379/0").strip()
+LOCALAI_VISION_ENABLED = os.getenv("LOCALAI_VISION_ENABLED", "0") == "1"
+LOCALAI_VISION_DEFAULT_MODEL = os.getenv("LOCALAI_VISION_DEFAULT_MODEL", "llava:latest").strip() or "llava:latest"
+LOCALAI_VISION_MAX_IMAGE_MB = max(1, _env_int("LOCALAI_VISION_MAX_IMAGE_MB", 10))
+LOCALAI_VISION_BENCHMARK_DATASET = os.getenv("LOCALAI_VISION_BENCHMARK_DATASET", "tests/fixtures/vision/smoke.jsonl").strip()
+LOCALAI_IMAGE_GEN_ENABLED = os.getenv("LOCALAI_IMAGE_GEN_ENABLED", "0") == "1"
+LOCALAI_IMAGE_GEN_PROVIDER = os.getenv("LOCALAI_IMAGE_GEN_PROVIDER", "none").strip() or "none"
+LOCALAI_IMAGE_GEN_BACKEND_URL = os.getenv("LOCALAI_IMAGE_GEN_BACKEND_URL", "http://image-gen:8090").strip() or "http://image-gen:8090"
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333").rstrip("/")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 MODEL_ADMIN_USERNAME = os.getenv("MODEL_ADMIN_USERNAME", "").strip()
@@ -161,6 +168,28 @@ class BenchmarkRequest(BaseModel):
     timeout_seconds: float = Field(default=60.0, ge=1.0, le=180.0)
 
 
+class VisionAnalyzeRequest(BaseModel):
+    model: str = ""
+    prompt: str = "Describe the image in one paragraph."
+    image_base64: str = ""
+    image_url: str = ""
+
+
+class VisionSmokeRequest(BaseModel):
+    model: str = ""
+    prompt: str = "Return exactly: ok"
+    image_base64: str = ""
+    image_url: str = ""
+    timeout_seconds: float = Field(default=30.0, ge=1.0, le=180.0)
+
+
+class VisionBenchmarkRequest(BaseModel):
+    model: str = ""
+    dataset_path: str = ""
+    iterations: int = Field(default=5, ge=1, le=1000)
+    timeout_seconds: float = Field(default=120.0, ge=1.0, le=300.0)
+
+
 def _sum_int(items: list[dict[str, Any]], key: str) -> int:
     total = 0
     for item in items:
@@ -228,6 +257,23 @@ def _fit_tier(required_ram_gb: float, host_ram_gb: int) -> str:
 
 def _is_generate_capable_model(model_name: str) -> bool:
     return _classify_model(model_name) != "embed"
+
+
+def _require_vision_enabled() -> None:
+    if not LOCALAI_VISION_ENABLED:
+        raise HTTPException(status_code=503, detail="vision lane disabled; set LOCALAI_VISION_ENABLED=1")
+
+
+def _resolve_vision_model(model: str) -> str:
+    chosen = model.strip() or LOCALAI_VISION_DEFAULT_MODEL
+    if _classify_model(chosen) != "vision":
+        raise HTTPException(status_code=400, detail=f"model '{chosen}' does not appear vision-capable")
+    return chosen
+
+
+def _validate_vision_image_input(image_base64: str, image_url: str) -> None:
+    if not image_base64.strip() and not image_url.strip():
+        raise HTTPException(status_code=400, detail="one of image_base64 or image_url is required")
 
 
 def _select_benchmark_model(models: list[dict[str, Any]], requested: str) -> str:
@@ -1003,6 +1049,85 @@ async def run_benchmark(req: BenchmarkRequest) -> dict[str, Any]:
             else 0.0,
         },
         "samples": samples,
+    }
+
+
+@app.post("/api/vision/analyze")
+async def vision_analyze(req: VisionAnalyzeRequest) -> dict[str, Any]:
+    _require_vision_enabled()
+    model = _resolve_vision_model(req.model)
+    _validate_vision_image_input(req.image_base64, req.image_url)
+    return {
+        "ok": False,
+        "status": "stub",
+        "message": "vision analyze endpoint scaffolded; inference implementation pending",
+        "model": model,
+        "prompt": req.prompt,
+        "image_source": "base64" if req.image_base64.strip() else "url",
+        "max_image_mb": LOCALAI_VISION_MAX_IMAGE_MB,
+    }
+
+
+@app.post("/api/tests/vision-smoke")
+async def run_vision_smoke(req: VisionSmokeRequest) -> dict[str, Any]:
+    _require_vision_enabled()
+    model = _resolve_vision_model(req.model)
+    _validate_vision_image_input(req.image_base64, req.image_url)
+    return {
+        "ok": True,
+        "status": "stub",
+        "summary": {
+            "passed": 0,
+            "failed": 0,
+            "skipped": 1,
+            "duration_ms": 0,
+        },
+        "checks": [
+            {
+                "name": "vision_inference",
+                "ok": True,
+                "skipped": True,
+                "duration_ms": 0,
+                "detail": "stub (phase 0 scaffold only)",
+                "model": model,
+            }
+        ],
+        "dataset_hint": LOCALAI_VISION_BENCHMARK_DATASET,
+    }
+
+
+@app.post("/api/tests/vision-benchmark")
+async def run_vision_benchmark(req: VisionBenchmarkRequest) -> dict[str, Any]:
+    _require_vision_enabled()
+    model = _resolve_vision_model(req.model)
+    dataset_path = req.dataset_path.strip() or LOCALAI_VISION_BENCHMARK_DATASET
+    return {
+        "ok": True,
+        "status": "stub",
+        "model": model,
+        "dataset_path": dataset_path,
+        "summary": {
+            "iterations_requested": req.iterations,
+            "iterations_executed": 0,
+            "successful_runs": 0,
+            "failed_runs": 0,
+            "latency_ms_avg": 0.0,
+            "latency_ms_p95": 0.0,
+        },
+        "samples": [],
+        "message": "vision benchmark endpoint scaffolded; runner implementation pending",
+    }
+
+
+@app.get("/api/image-gen/health")
+async def image_gen_health() -> dict[str, Any]:
+    return {
+        "enabled": LOCALAI_IMAGE_GEN_ENABLED,
+        "provider": LOCALAI_IMAGE_GEN_PROVIDER,
+        "backend_url": LOCALAI_IMAGE_GEN_BACKEND_URL,
+        "ready": False,
+        "status": "stub",
+        "message": "image generation service lane not implemented yet",
     }
 
 

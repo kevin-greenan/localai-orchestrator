@@ -467,6 +467,16 @@ def _write_runtime_env(
         f"LOCALAI_QDRANT_INDEXING_THRESHOLD_KB={qdrant_values['indexing_threshold_kb']}",
         f"LOCALAI_QDRANT_HNSW_M={qdrant_values['hnsw_m']}",
         f"LOCALAI_QDRANT_HNSW_EF_CONSTRUCT={qdrant_values['hnsw_ef_construct']}",
+        f"LOCALAI_VISION_ENABLED={'1' if cfg.vision.enabled else '0'}",
+        f"LOCALAI_VISION_DEFAULT_MODEL={cfg.vision.default_model}",
+        f"LOCALAI_VISION_MAX_IMAGE_MB={cfg.vision.max_image_mb}",
+        f"LOCALAI_VISION_BENCHMARK_DATASET={cfg.vision.benchmark_dataset}",
+        f"LOCALAI_IMAGE_GEN_ENABLED={'1' if cfg.image_gen.enabled else '0'}",
+        f"LOCALAI_IMAGE_GEN_PROVIDER={cfg.image_gen.provider}",
+        f"LOCALAI_IMAGE_GEN_CONCURRENCY={cfg.image_gen.concurrency}",
+        f"LOCALAI_IMAGE_GEN_QUEUE_TIMEOUT_SECONDS={cfg.image_gen.queue_timeout_seconds}",
+        f"LOCALAI_IMAGE_GEN_ARTIFACT_STORE={cfg.image_gen.artifact_store}",
+        f"LOCALAI_IMAGE_GEN_BACKEND_URL={cfg.image_gen.backend_url}",
         f"LOCALAI_DOCKER_SERVICES={','.join(active_services)}",
     ]
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

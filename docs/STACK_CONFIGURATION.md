@@ -100,6 +100,8 @@ Behavior:
 - `[rag.qdrant]`: qdrant enable/disable and optional manual tuning overrides
 - `[web]`: web-search enablement and OpenWebUI/SearxNG defaults
 - `[web.redis]`: Redis cache sizing policy for web-search workloads
+- `[vision]`: vision-lane feature flag and defaults for image-input testing
+- `[image_gen]`: image-generation lane feature flag and backend/provider settings
 - `[health]`: health-check URLs
 - `[tuning]`: auto-tuning behavior
 

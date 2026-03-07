@@ -119,6 +119,42 @@ class UpFlagTests(unittest.TestCase):
             self.assertEqual(env["LOCALAI_OPENWEBUI_PORT"], "3000")
             self.assertEqual(env["LOCALAI_BIND_IP"], "0.0.0.0")
 
+    def test_runtime_env_includes_vision_and_image_gen_flags(self):
+        args = self._args()
+        cfg = self._cfg()
+        cfg.vision.enabled = True
+        cfg.vision.default_model = "llava:latest"
+        cfg.vision.max_image_mb = 12
+        cfg.vision.benchmark_dataset = "tests/fixtures/vision/smoke.jsonl"
+        cfg.image_gen.enabled = True
+        cfg.image_gen.provider = "comfyui"
+        cfg.image_gen.concurrency = 2
+        cfg.image_gen.queue_timeout_seconds = 450
+        cfg.image_gen.artifact_store = "minio"
+        cfg.image_gen.backend_url = "http://image-gen:8090"
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg.root = Path(td)
+            with (
+                patch.object(cli, "_load_cfg_with_tuning", return_value=(cfg, _fake_tuning())),
+                patch.object(cli, "compose_up"),
+                patch.object(cli, "start_ollama_launch_agent"),
+            ):
+                rc = cli._cmd_up(args)
+
+            self.assertEqual(rc, 0)
+            env = _read_env(Path(td) / ".localai.env")
+            self.assertEqual(env["LOCALAI_VISION_ENABLED"], "1")
+            self.assertEqual(env["LOCALAI_VISION_DEFAULT_MODEL"], "llava:latest")
+            self.assertEqual(env["LOCALAI_VISION_MAX_IMAGE_MB"], "12")
+            self.assertEqual(env["LOCALAI_VISION_BENCHMARK_DATASET"], "tests/fixtures/vision/smoke.jsonl")
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_ENABLED"], "1")
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_PROVIDER"], "comfyui")
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_CONCURRENCY"], "2")
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_QUEUE_TIMEOUT_SECONDS"], "450")
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_ARTIFACT_STORE"], "minio")
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_BACKEND_URL"], "http://image-gen:8090")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -57,6 +57,20 @@ searxng_query_url = "http://searxng:8080/search?q=<query>&format=json"
 # maxmemory_mb = 512
 # maxmemory_policy = "allkeys-lru"
 
+[vision]
+enabled = false
+default_model = "llava:latest"
+max_image_mb = 10
+benchmark_dataset = "tests/fixtures/vision/smoke.jsonl"
+
+[image_gen]
+enabled = false
+provider = "none"
+concurrency = 1
+queue_timeout_seconds = 300
+artifact_store = "minio"
+backend_url = "http://image-gen:8090"
+
 [health]
 openwebui_url = "http://127.0.0.1:3000/health"
 qdrant_url = "http://127.0.0.1:6333/healthz"

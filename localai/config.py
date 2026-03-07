@@ -88,6 +88,24 @@ class WebConfig:
 
 
 @dataclass(slots=True)
+class VisionConfig:
+    enabled: bool
+    default_model: str
+    max_image_mb: int
+    benchmark_dataset: str
+
+
+@dataclass(slots=True)
+class ImageGenConfig:
+    enabled: bool
+    provider: str
+    concurrency: int
+    queue_timeout_seconds: int
+    artifact_store: str
+    backend_url: str
+
+
+@dataclass(slots=True)
 class StackConfig:
     name: str
     root: Path
@@ -97,6 +115,8 @@ class StackConfig:
     tuning: TuningConfig
     rag: RagConfig
     web: WebConfig
+    vision: VisionConfig
+    image_gen: ImageGenConfig
 
 
 DEFAULT_STACK = "stack.toml"
@@ -117,6 +137,8 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
     qdrant_raw = rag_raw.get("qdrant", {})
     web_raw = raw.get("web", {})
     web_redis_raw = web_raw.get("redis", {})
+    vision_raw = raw.get("vision", {})
+    image_gen_raw = raw.get("image_gen", {})
     preset_raw = str(rag_raw.get("preset", "fast")).strip().lower()
     preset = preset_raw if preset_raw in {"fast", "deep"} else "fast"
 
@@ -194,6 +216,20 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
         user_set_loader_concurrent_requests="loader_concurrent_requests" in web_raw,
         user_set_request_timeout_seconds="request_timeout_seconds" in web_raw,
     )
+    vision = VisionConfig(
+        enabled=bool(vision_raw.get("enabled", False)),
+        default_model=str(vision_raw.get("default_model", "llava:latest")).strip(),
+        max_image_mb=int(vision_raw.get("max_image_mb", 10)),
+        benchmark_dataset=str(vision_raw.get("benchmark_dataset", "tests/fixtures/vision/smoke.jsonl")).strip(),
+    )
+    image_gen = ImageGenConfig(
+        enabled=bool(image_gen_raw.get("enabled", False)),
+        provider=str(image_gen_raw.get("provider", "none")).strip(),
+        concurrency=int(image_gen_raw.get("concurrency", 1)),
+        queue_timeout_seconds=int(image_gen_raw.get("queue_timeout_seconds", 300)),
+        artifact_store=str(image_gen_raw.get("artifact_store", "minio")).strip(),
+        backend_url=str(image_gen_raw.get("backend_url", "http://image-gen:8090")).strip(),
+    )
 
     return StackConfig(
         name=str(project.get("name", "localai")),
@@ -204,4 +240,6 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
         tuning=tuning,
         rag=rag,
         web=web,
+        vision=vision,
+        image_gen=image_gen,
     )
