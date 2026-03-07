@@ -9,6 +9,7 @@ macOS-first orchestration for Apple Silicon: run Ollama natively (Metal path) an
 - Networking, exposure, and endpoint behavior: `docs/NETWORKING.md`
 - Stack configuration, RAG, web-search, and tuning: `docs/STACK_CONFIGURATION.md`
 - Model Admin behavior and debug console: `docs/MODEL_ADMIN.md`
+- Computer vision + image generation roadmap: `docs/COMPUTER_VISION_UPGRADE_PATH.md`
 - Runtime files and troubleshooting: `docs/OPERATIONS.md`
 
 ## What It Does
