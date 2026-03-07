@@ -11,6 +11,7 @@ macOS-first orchestration for Apple Silicon: run Ollama natively (Metal path) an
 - Exposes a Model Admin web UI with:
   - pull/update/delete model actions
   - live utilization cards + sparklines
+  - RAG health strip (preset, qdrant status, collections, indexed vectors, qdrant latency)
   - searchable catalog with one-click pull
   - class and fit filters (`chat`, `reasoning`, `code`, `embed`, `vision`)
 

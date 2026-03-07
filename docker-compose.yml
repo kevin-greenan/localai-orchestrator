@@ -34,6 +34,8 @@ services:
         required: false
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - MODEL_ADMIN_USERNAME=${MODEL_ADMIN_USERNAME:-}
       - MODEL_ADMIN_PASSWORD=${MODEL_ADMIN_PASSWORD:-}
     restart: unless-stopped
