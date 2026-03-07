@@ -33,7 +33,7 @@ flowchart LR
   openwebui --> ollama
   admin --> ollama
   admin --> ivs
-  admin --> igen
+  openwebui --> igen
   openwebui --> qdrant
   ivs --> qdrant
   ivs --> minio
@@ -110,6 +110,8 @@ Reuse existing benchmark patterns for output formatting and JSON export.
 
 ## Lane B: Image Generation Service
 
+OpenWebUI is the primary image-generation user interface. Model Admin remains operations-only and does not host image-generation UX.
+
 ### B1. Service Boundary
 
 Introduce a new service (`image-gen`) in Compose:
@@ -123,7 +125,7 @@ Introduce a new service (`image-gen`) in Compose:
 Why separate lane:
 
 - Different runtime profile and reliability concerns vs text/vision inference
-- Enables async job handling and retries without blocking Model Admin or OpenWebUI flows
+- Enables async job handling and retries without blocking OpenWebUI flows
 
 ### B2. Backend Options
 
@@ -159,19 +161,19 @@ Metadata fields:
 
 - prompt, model/backend, seed, size, steps, timestamp, duration, status
 
-### B5. UI/Model Admin Integration
+### B5. OpenWebUI Integration (Primary UX)
 
-Add new Model Admin page sections:
+Integrate image generation directly in OpenWebUI:
 
-- Image generation form
-- Active/queued/completed jobs table
-- Result gallery with metadata drill-down
+- Prompt form and generation controls in OpenWebUI
+- Jobs/history panel in OpenWebUI
+- Result gallery in OpenWebUI with artifact metadata
 
-Add smoke tests:
+Keep Model Admin scope limited to operations:
 
-- Backend health
-- Queue health
-- Minimal generation sanity check
+- Health/readiness for `image-gen`, queue, and storage
+- Optional read-only metrics cards
+- No generation form or direct image-generation actions
 
 ## Stack and Config Changes
 
@@ -227,7 +229,7 @@ Optional:
 
 3. Phase 2 (4-7 days)
 - Ship image-gen service with async jobs and artifact persistence.
-- Add Model Admin generation UI and operational metrics.
+- Add OpenWebUI generation UX and operational metrics.
 
 4. Phase 3 (2-4 days)
 - Hardening: retries/timeouts, auth, retention, benchmark baselining.
@@ -252,4 +254,5 @@ Image generation lane is complete when:
 2. Add test fixtures and tests under `tests/` for vision smoke/benchmark APIs.
 3. Add CLI subcommands in `localai/cli.py` for vision testing.
 4. Add `image-gen` and `minio` service definitions in `docker-compose.yml` behind env flags.
-5. Add new config dataclasses/parsing in `localai/config.py` and docs updates.
+5. Wire OpenWebUI to `image-gen` APIs for generation, job status, and artifact retrieval.
+6. Add new config dataclasses/parsing in `localai/config.py` and docs updates.
