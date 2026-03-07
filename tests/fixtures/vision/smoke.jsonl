@@ -1,0 +1,2 @@
+{"prompt":"Return exactly: OK","image_base64":"aGVsbG8=","expected_contains":"OK"}
+{"prompt":"Return exactly: PASS","image_base64":"d29ybGQ=","expected_contains":"PASS"}

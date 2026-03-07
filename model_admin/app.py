@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 from urllib.parse import quote_plus, urlparse
+from pathlib import Path
 from time import monotonic, perf_counter
 from typing import Any, Literal
 
@@ -274,6 +275,97 @@ def _resolve_vision_model(model: str) -> str:
 def _validate_vision_image_input(image_base64: str, image_url: str) -> None:
     if not image_base64.strip() and not image_url.strip():
         raise HTTPException(status_code=400, detail="one of image_base64 or image_url is required")
+
+
+def _strip_data_url_prefix(image_base64: str) -> str:
+    raw = image_base64.strip()
+    if raw.startswith("data:") and "," in raw:
+        return raw.split(",", 1)[1].strip()
+    return raw
+
+
+def _validate_base64_bytes(image_b64: str) -> bytes:
+    try:
+        return base64.b64decode(image_b64, validate=True)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"invalid image_base64 payload: {e}") from e
+
+
+async def _resolve_image_base64(image_base64: str, image_url: str) -> str:
+    if image_base64.strip():
+        normalized = _strip_data_url_prefix(image_base64)
+        image_bytes = _validate_base64_bytes(normalized)
+        if len(image_bytes) > LOCALAI_VISION_MAX_IMAGE_MB * 1024 * 1024:
+            raise HTTPException(status_code=413, detail=f"image exceeds max size ({LOCALAI_VISION_MAX_IMAGE_MB} MB)")
+        return normalized
+
+    parsed = urlparse(image_url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail="image_url must use http or https")
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(image_url.strip())
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"failed to fetch image_url: {e}") from e
+
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=400, detail=f"image_url fetch failed with status {resp.status_code}")
+    image_bytes = resp.content or b""
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="image_url returned empty content")
+    if len(image_bytes) > LOCALAI_VISION_MAX_IMAGE_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"image exceeds max size ({LOCALAI_VISION_MAX_IMAGE_MB} MB)")
+    return base64.b64encode(image_bytes).decode("ascii")
+
+
+def _extract_response_text(out: dict[str, Any]) -> str:
+    text = str(out.get("response", "") or "").strip()
+    if text:
+        return text
+    message = out.get("message")
+    if isinstance(message, dict):
+        content = str(message.get("content", "") or "").strip()
+        if content:
+            return content
+    return ""
+
+
+async def _vision_infer(model: str, prompt: str, image_b64: str, timeout_seconds: float) -> dict[str, Any]:
+    out = await _ollama_request(
+        "POST",
+        "/api/generate",
+        {
+            "model": model,
+            "prompt": prompt,
+            "images": [image_b64],
+            "stream": False,
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    eval_count = int(out.get("eval_count", 0) or 0)
+    eval_duration_ns = int(out.get("eval_duration", 0) or 0)
+    total_duration_ns = int(out.get("total_duration", 0) or 0)
+    token_s = round((eval_count / (eval_duration_ns / 1_000_000_000.0)), 2) if eval_duration_ns > 0 else 0.0
+    response_text = _extract_response_text(out)
+    return {
+        "response": response_text,
+        "raw": out,
+        "eval_count": eval_count,
+        "eval_duration_ms": round(eval_duration_ns / 1_000_000.0, 2),
+        "total_duration_ms": round(total_duration_ns / 1_000_000.0, 2),
+        "tokens_per_second": token_s,
+    }
+
+
+def _resolve_dataset_path(dataset_path: str) -> Path:
+    raw = dataset_path.strip() or LOCALAI_VISION_BENCHMARK_DATASET
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    if not p.exists():
+        raise HTTPException(status_code=400, detail=f"dataset file not found: {p}")
+    return p
 
 
 def _select_benchmark_model(models: list[dict[str, Any]], requested: str) -> str:
@@ -575,8 +667,8 @@ async def _ollama_stream_post(path: str, payload: dict[str, Any]) -> dict[str, A
     }
 
 
-async def _ollama_request(method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=30.0) as client:
+async def _ollama_request(method: str, path: str, payload: dict[str, Any], *, timeout_seconds: float = 30.0) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         resp = await client.request(method, f"{OLLAMA_BASE_URL}{path}", json=payload)
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
@@ -1057,14 +1149,23 @@ async def vision_analyze(req: VisionAnalyzeRequest) -> dict[str, Any]:
     _require_vision_enabled()
     model = _resolve_vision_model(req.model)
     _validate_vision_image_input(req.image_base64, req.image_url)
+    image_b64 = await _resolve_image_base64(req.image_base64, req.image_url)
+    started = perf_counter()
+    result = await _vision_infer(model, req.prompt.strip() or "Describe the image in one paragraph.", image_b64, 60.0)
     return {
-        "ok": False,
-        "status": "stub",
-        "message": "vision analyze endpoint scaffolded; inference implementation pending",
+        "ok": bool(result["response"]),
+        "status": "ready",
         "model": model,
         "prompt": req.prompt,
         "image_source": "base64" if req.image_base64.strip() else "url",
         "max_image_mb": LOCALAI_VISION_MAX_IMAGE_MB,
+        "duration_ms": int((perf_counter() - started) * 1000),
+        "response": result["response"],
+        "eval_count": result["eval_count"],
+        "eval_duration_ms": result["eval_duration_ms"],
+        "total_duration_ms": result["total_duration_ms"],
+        "tokens_per_second": result["tokens_per_second"],
+        "raw": result["raw"],
     }
 
 
@@ -1073,25 +1174,44 @@ async def run_vision_smoke(req: VisionSmokeRequest) -> dict[str, Any]:
     _require_vision_enabled()
     model = _resolve_vision_model(req.model)
     _validate_vision_image_input(req.image_base64, req.image_url)
-    return {
-        "ok": True,
-        "status": "stub",
-        "summary": {
-            "passed": 0,
-            "failed": 0,
-            "skipped": 1,
-            "duration_ms": 0,
-        },
-        "checks": [
+    image_b64 = await _resolve_image_base64(req.image_base64, req.image_url)
+    started = perf_counter()
+    checks: list[dict[str, Any]] = []
+    try:
+        out = await _vision_infer(model, req.prompt.strip() or "Return exactly: ok", image_b64, req.timeout_seconds)
+        ok = bool(out["response"])
+        checks.append(
             {
                 "name": "vision_inference",
-                "ok": True,
-                "skipped": True,
-                "duration_ms": 0,
-                "detail": "stub (phase 0 scaffold only)",
+                "ok": ok,
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "detail": "" if ok else "empty response",
                 "model": model,
             }
-        ],
+        )
+    except Exception as e:  # noqa: BLE001
+        checks.append(
+            {
+                "name": "vision_inference",
+                "ok": False,
+                "duration_ms": int((perf_counter() - started) * 1000),
+                "detail": str(e),
+                "model": model,
+            }
+        )
+
+    passed = sum(1 for c in checks if c.get("ok"))
+    failed = len(checks) - passed
+    return {
+        "ok": failed == 0,
+        "status": "ready",
+        "summary": {
+            "passed": passed,
+            "failed": failed,
+            "skipped": 0,
+            "duration_ms": int((perf_counter() - started) * 1000),
+        },
+        "checks": checks,
         "dataset_hint": LOCALAI_VISION_BENCHMARK_DATASET,
     }
 
@@ -1100,22 +1220,112 @@ async def run_vision_smoke(req: VisionSmokeRequest) -> dict[str, Any]:
 async def run_vision_benchmark(req: VisionBenchmarkRequest) -> dict[str, Any]:
     _require_vision_enabled()
     model = _resolve_vision_model(req.model)
-    dataset_path = req.dataset_path.strip() or LOCALAI_VISION_BENCHMARK_DATASET
+    path = _resolve_dataset_path(req.dataset_path)
+    started = perf_counter()
+
+    rows: list[dict[str, Any]] = []
+    for idx, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        s = line.strip()
+        if not s:
+            continue
+        try:
+            row = json.loads(s)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"invalid JSONL at line {idx}: {e}") from e
+        if not isinstance(row, dict):
+            raise HTTPException(status_code=400, detail=f"invalid JSONL object at line {idx}")
+        rows.append(row)
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="benchmark dataset is empty")
+
+    target = rows[: req.iterations]
+    samples: list[dict[str, Any]] = []
+    latencies: list[float] = []
+    token_rates: list[float] = []
+    failures = 0
+    passes = 0
+
+    for i, row in enumerate(target):
+        prompt = str(row.get("prompt", "")).strip() or "Describe the image in one paragraph."
+        expected_contains = str(row.get("expected_contains", "")).strip()
+        image_b64 = str(row.get("image_base64", "")).strip()
+        image_url = str(row.get("image_url", "")).strip()
+
+        if not image_b64 and not image_url:
+            failures += 1
+            samples.append(
+                {
+                    "run": i + 1,
+                    "ok": False,
+                    "latency_ms": 0.0,
+                    "score_pass": False,
+                    "error": "dataset row missing image_base64/image_url",
+                }
+            )
+            continue
+
+        t0 = perf_counter()
+        try:
+            normalized = await _resolve_image_base64(image_b64, image_url)
+            out = await _vision_infer(model, prompt, normalized, req.timeout_seconds)
+            latency_ms = round((perf_counter() - t0) * 1000.0, 2)
+            response = out["response"]
+            score_pass = bool(response)
+            if expected_contains:
+                score_pass = expected_contains.lower() in response.lower()
+            if score_pass:
+                passes += 1
+            latencies.append(latency_ms)
+            if out["tokens_per_second"] > 0:
+                token_rates.append(float(out["tokens_per_second"]))
+            samples.append(
+                {
+                    "run": i + 1,
+                    "ok": True,
+                    "latency_ms": latency_ms,
+                    "score_pass": score_pass,
+                    "expected_contains": expected_contains,
+                    "response": response,
+                    "eval_count": out["eval_count"],
+                    "eval_duration_ms": out["eval_duration_ms"],
+                    "total_duration_ms": out["total_duration_ms"],
+                    "tokens_per_second": out["tokens_per_second"],
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            failures += 1
+            samples.append(
+                {
+                    "run": i + 1,
+                    "ok": False,
+                    "latency_ms": round((perf_counter() - t0) * 1000.0, 2),
+                    "score_pass": False,
+                    "error": str(e),
+                }
+            )
+
+    executed = len(samples)
     return {
-        "ok": True,
-        "status": "stub",
+        "ok": failures == 0,
+        "status": "ready",
         "model": model,
-        "dataset_path": dataset_path,
+        "dataset_path": str(path),
         "summary": {
             "iterations_requested": req.iterations,
-            "iterations_executed": 0,
-            "successful_runs": 0,
-            "failed_runs": 0,
-            "latency_ms_avg": 0.0,
-            "latency_ms_p95": 0.0,
+            "iterations_executed": executed,
+            "successful_runs": executed - failures,
+            "failed_runs": failures,
+            "latency_ms_avg": round(sum(latencies) / len(latencies), 2) if latencies else 0.0,
+            "latency_ms_p95": round(_percentile(latencies, 95), 2) if latencies else 0.0,
+            "tokens_per_second_avg": round(sum(token_rates) / len(token_rates), 2) if token_rates else 0.0,
+            "score_passed": passes,
+            "score_total": executed,
+            "score_pass_rate": round((passes / executed) * 100.0, 2) if executed else 0.0,
+            "duration_ms": int((perf_counter() - started) * 1000),
         },
-        "samples": [],
-        "message": "vision benchmark endpoint scaffolded; runner implementation pending",
+        "samples": samples,
+        "message": "vision benchmark completed",
     }
 
 

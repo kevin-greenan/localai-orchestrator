@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 
@@ -137,18 +139,35 @@ class ModelAdminEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 503)
         self.assertIn("vision lane disabled", resp.json().get("detail", ""))
 
-    def test_vision_analyze_returns_stub_payload_when_enabled(self):
-        with patch.object(admin, "LOCALAI_VISION_ENABLED", True):
+    def test_vision_analyze_returns_ready_payload_when_enabled(self):
+        with (
+            patch.object(admin, "LOCALAI_VISION_ENABLED", True),
+            patch.object(
+                admin,
+                "_vision_infer",
+                new=AsyncMock(
+                    return_value={
+                        "response": "scene description",
+                        "raw": {"response": "scene description"},
+                        "eval_count": 20,
+                        "eval_duration_ms": 120.0,
+                        "total_duration_ms": 150.0,
+                        "tokens_per_second": 166.0,
+                    }
+                ),
+            ),
+        ):
             resp = self.client.post(
                 "/api/vision/analyze",
-                json={"model": "llava:latest", "prompt": "describe", "image_url": "https://example.com/a.png"},
+                json={"model": "llava:latest", "prompt": "describe", "image_base64": "aGVsbG8="},
             )
 
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
-        self.assertEqual(payload["status"], "stub")
+        self.assertEqual(payload["status"], "ready")
         self.assertEqual(payload["model"], "llava:latest")
-        self.assertEqual(payload["image_source"], "url")
+        self.assertEqual(payload["image_source"], "base64")
+        self.assertEqual(payload["response"], "scene description")
 
     def test_vision_analyze_rejects_non_vision_model(self):
         with patch.object(admin, "LOCALAI_VISION_ENABLED", True):
@@ -160,18 +179,82 @@ class ModelAdminEndpointTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("does not appear vision-capable", resp.json().get("detail", ""))
 
-    def test_vision_smoke_stub_returns_skipped_check(self):
-        with patch.object(admin, "LOCALAI_VISION_ENABLED", True):
+    def test_vision_smoke_runs_inference_check(self):
+        with (
+            patch.object(admin, "LOCALAI_VISION_ENABLED", True),
+            patch.object(
+                admin,
+                "_vision_infer",
+                new=AsyncMock(
+                    return_value={
+                        "response": "ok",
+                        "raw": {"response": "ok"},
+                        "eval_count": 10,
+                        "eval_duration_ms": 50.0,
+                        "total_duration_ms": 70.0,
+                        "tokens_per_second": 200.0,
+                    }
+                ),
+            ),
+        ):
             resp = self.client.post(
                 "/api/tests/vision-smoke",
-                json={"model": "llava:latest", "prompt": "ok", "image_url": "https://example.com/a.png"},
+                json={"model": "llava:latest", "prompt": "ok", "image_base64": "aGVsbG8="},
             )
 
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
-        self.assertEqual(payload["status"], "stub")
-        self.assertEqual(payload["summary"]["skipped"], 1)
-        self.assertTrue(payload["checks"][0]["skipped"])
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["summary"]["skipped"], 0)
+        self.assertTrue(payload["checks"][0]["ok"])
+
+    def test_vision_benchmark_runs_dataset(self):
+        dataset = (
+            '{"prompt":"Return exactly: ok","image_base64":"aGVsbG8=","expected_contains":"ok"}\n'
+            '{"prompt":"Return exactly: ok","image_base64":"aGVsbG8=","expected_contains":"ok"}\n'
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "vision.jsonl"
+            path.write_text(dataset, encoding="utf-8")
+            with (
+                patch.object(admin, "LOCALAI_VISION_ENABLED", True),
+                patch.object(
+                    admin,
+                    "_vision_infer",
+                    new=AsyncMock(
+                        side_effect=[
+                            {
+                                "response": "ok",
+                                "raw": {"response": "ok"},
+                                "eval_count": 10,
+                                "eval_duration_ms": 50.0,
+                                "total_duration_ms": 70.0,
+                                "tokens_per_second": 200.0,
+                            },
+                            {
+                                "response": "ok",
+                                "raw": {"response": "ok"},
+                                "eval_count": 12,
+                                "eval_duration_ms": 60.0,
+                                "total_duration_ms": 80.0,
+                                "tokens_per_second": 180.0,
+                            },
+                        ]
+                    ),
+                ),
+            ):
+                resp = self.client.post(
+                    "/api/tests/vision-benchmark",
+                    json={"model": "llava:latest", "dataset_path": str(path), "iterations": 2, "timeout_seconds": 10.0},
+                )
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["summary"]["iterations_executed"], 2)
+        self.assertEqual(payload["summary"]["failed_runs"], 0)
+        self.assertEqual(payload["summary"]["score_passed"], 2)
+        self.assertEqual(len(payload["samples"]), 2)
 
     def test_image_gen_health_reports_stub_status(self):
         with (

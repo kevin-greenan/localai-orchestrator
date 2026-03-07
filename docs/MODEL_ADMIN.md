@@ -16,6 +16,8 @@
 - Searchable catalog with one-click pull
 - Class and fit filters (`chat`, `reasoning`, `code`, `embed`, `vision`)
 - Built-in smoke test runner and inference benchmark runner
+- Vision APIs for image analysis, smoke testing, and dataset benchmarking (feature-flagged)
+- Image-gen lane health endpoint for operations visibility (`/api/image-gen/health`)
 
 ## Operational Notes
 
@@ -39,3 +41,13 @@ The UI includes an allowlisted debug console for safe Ollama API operations (not
 - `pull`: call `/api/pull` for one model update/pull (requires `model`)
 
 Responses include raw JSON and `duration_ms`.
+
+## Vision APIs
+
+When `LOCALAI_VISION_ENABLED=1`, Model Admin exposes:
+
+- `POST /api/vision/analyze`
+- `POST /api/tests/vision-smoke`
+- `POST /api/tests/vision-benchmark`
+
+These endpoints are intended for vision ingestion/benchmark workflows (not image generation UX).

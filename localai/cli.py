@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import base64
 import json
 import math
 import platform
@@ -11,6 +12,8 @@ import statistics
 import sys
 import time
 from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 from .config import DEFAULT_STACK, StackConfig, load_stack
 from .docker import compose_down, compose_ps, compose_up, has_docker
@@ -327,6 +330,37 @@ def _effective_services(cfg: StackConfig) -> list[str]:
     if raw:
         return [s.strip() for s in raw.split(",") if s.strip()]
     return list(cfg.docker.services)
+
+
+def _effective_model_admin_url(cfg: StackConfig) -> str:
+    runtime_env = _read_runtime_env(Path(cfg.root))
+    port = runtime_env.get("LOCALAI_MODEL_ADMIN_PORT")
+    if port and port.isdigit():
+        return f"http://127.0.0.1:{port}"
+    return "http://127.0.0.1:3010"
+
+
+def _post_json(url: str, payload: dict[str, object], timeout: float) -> dict[str, object]:
+    data = json.dumps(payload).encode("utf-8")
+    req = Request(url, method="POST", data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"request failed ({e.code}): {detail}") from e
+    except URLError as e:
+        raise RuntimeError(f"request failed: {e}") from e
+
+
+def _encode_image_file(path: str) -> str:
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    if not p.exists():
+        raise RuntimeError(f"image file not found: {p}")
+    return base64.b64encode(p.read_bytes()).decode("ascii")
 
 
 def _redis_ping(cfg: StackConfig) -> tuple[bool, str]:
@@ -678,6 +712,9 @@ def _probe_http(url: str, timeout: float) -> dict[str, object]:
 
 
 def _cmd_benchmark(args: argparse.Namespace) -> int:
+    if getattr(args, "benchmark_kind", "text") == "vision":
+        return _cmd_benchmark_vision(args)
+
     cfg, _ = _load_cfg_with_tuning(args.stack)
     if args.iterations < 1:
         raise RuntimeError("--iterations must be at least 1")
@@ -759,6 +796,49 @@ def _cmd_benchmark(args: argparse.Namespace) -> int:
     return 1 if failures == args.iterations else 0
 
 
+def _cmd_test_vision_smoke(args: argparse.Namespace) -> int:
+    cfg, _ = _load_cfg_with_tuning(args.stack)
+    if not cfg.vision.enabled:
+        raise RuntimeError("vision lane is disabled in stack.toml ([vision].enabled=false)")
+    if not args.image and not args.image_url:
+        raise RuntimeError("vision smoke requires one of --image or --image-url")
+
+    model_admin = _effective_model_admin_url(cfg)
+    payload: dict[str, object] = {
+        "model": args.model or cfg.vision.default_model,
+        "prompt": args.prompt,
+        "timeout_seconds": args.timeout,
+    }
+    if args.image:
+        payload["image_base64"] = _encode_image_file(args.image)
+    if args.image_url:
+        payload["image_url"] = args.image_url
+
+    out = _post_json(f"{model_admin}/api/tests/vision-smoke", payload, timeout=max(5.0, args.timeout + 5.0))
+    print(json.dumps(out, indent=2))
+    return 0 if bool(out.get("ok")) else 1
+
+
+def _cmd_benchmark_vision(args: argparse.Namespace) -> int:
+    cfg, _ = _load_cfg_with_tuning(args.stack)
+    if not cfg.vision.enabled:
+        raise RuntimeError("vision lane is disabled in stack.toml ([vision].enabled=false)")
+
+    model_admin = _effective_model_admin_url(cfg)
+    payload: dict[str, object] = {
+        "model": args.model or cfg.vision.default_model,
+        "dataset_path": args.dataset or cfg.vision.benchmark_dataset,
+        "iterations": args.iterations,
+        "timeout_seconds": args.timeout,
+    }
+    out = _post_json(f"{model_admin}/api/tests/vision-benchmark", payload, timeout=max(5.0, args.timeout + 10.0))
+    print(json.dumps(out, indent=2))
+    summary = out.get("summary", {})
+    if isinstance(summary, dict):
+        return 0 if int(summary.get("failed_runs", 1) or 0) == 0 else 1
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="localai", description="macOS-first orchestrator for native Ollama + Docker stack")
     p.add_argument("--stack", default=DEFAULT_STACK, help="Path to stack.toml")
@@ -827,8 +907,26 @@ def build_parser() -> argparse.ArgumentParser:
     sub_logs.add_argument("--tail", type=int, default=100)
     sub_logs.set_defaults(func=_cmd_logs)
 
+    sub_test = sub.add_parser("test", help="Run test workflows")
+    sub_test_sub = sub_test.add_subparsers(dest="test_kind", required=True)
+    sub_test_vision = sub_test_sub.add_parser("vision-smoke", help="Run one vision smoke check via Model Admin")
+    sub_test_vision.add_argument("--model", help="Vision model tag (defaults to [vision].default_model)")
+    sub_test_vision.add_argument("--prompt", default="Return exactly: ok", help="Vision prompt for smoke test")
+    sub_test_vision.add_argument("--image", help="Local image path to send as base64")
+    sub_test_vision.add_argument("--image-url", help="HTTP(S) image URL")
+    sub_test_vision.add_argument("--timeout", type=float, default=30.0, help="Request timeout in seconds")
+    sub_test_vision.set_defaults(func=_cmd_test_vision_smoke)
+
     sub_bench = sub.add_parser("benchmark", help="Run quick local performance probes and Ollama inference benchmark")
+    sub_bench.add_argument(
+        "benchmark_kind",
+        nargs="?",
+        choices=["text", "vision"],
+        default="text",
+        help="Benchmark lane: text (default) or vision.",
+    )
     sub_bench.add_argument("--model", help="Model to benchmark (defaults: warmup_model, then first configured model)")
+    sub_bench.add_argument("--dataset", help="Vision benchmark dataset JSONL path (for benchmark vision)")
     sub_bench.add_argument("--prompt", default="Summarize why local-first AI stacks are useful in one sentence.")
     sub_bench.add_argument("--iterations", type=int, default=5, help="Number of benchmark inference runs")
     sub_bench.add_argument("--timeout", type=float, default=60.0, help="Per-request timeout in seconds")

@@ -76,6 +76,15 @@ localai doctor
 # Quick baseline (5 runs, JSON output)
 localai benchmark
 
+# Vision benchmark lane (calls Model Admin vision benchmark API)
+localai benchmark vision --model llava:latest --dataset tests/fixtures/vision/smoke.jsonl --iterations 5
+
+# Vision smoke check with a local image
+localai test vision-smoke --model llava:latest --image ./sample.png
+
+# Vision smoke check with an HTTP image URL
+localai test vision-smoke --model llava:latest --image-url https://example.com/sample.png
+
 # Compare model variants with more samples
 localai benchmark --model llama3.2:3b --iterations 10
 localai benchmark --model qwen2.5:7b --iterations 10
@@ -90,3 +99,14 @@ localai benchmark --prompt "Summarize this repo in one sentence." --iterations 8
 - per-run inference wall time
 - token throughput from Ollama (`tokens_per_second`)
 - summary stats (`avg`, `p50`, `p95`, `min`, `max`)
+
+`localai benchmark vision` prints JSON including:
+
+- dataset path and iteration counts
+- per-sample latency and pass/fail scoring
+- aggregate latency and pass-rate metrics
+
+Vision command notes:
+
+- `localai test vision-smoke` requires one of `--image` or `--image-url`
+- Vision commands require `[vision].enabled = true` in `stack.toml`
