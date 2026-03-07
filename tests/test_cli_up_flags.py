@@ -154,6 +154,10 @@ class UpFlagTests(unittest.TestCase):
             self.assertEqual(env["LOCALAI_IMAGE_GEN_QUEUE_TIMEOUT_SECONDS"], "450")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_ARTIFACT_STORE"], "minio")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_BACKEND_URL"], "http://image-gen:8090")
+            services = set(env["LOCALAI_DOCKER_SERVICES"].split(","))
+            self.assertIn("image-gen", services)
+            self.assertIn("minio", services)
+            self.assertIn("image-redis", services)
 
 
 if __name__ == "__main__":

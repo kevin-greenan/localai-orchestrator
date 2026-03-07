@@ -1331,14 +1331,51 @@ async def run_vision_benchmark(req: VisionBenchmarkRequest) -> dict[str, Any]:
 
 @app.get("/api/image-gen/health")
 async def image_gen_health() -> dict[str, Any]:
-    return {
-        "enabled": LOCALAI_IMAGE_GEN_ENABLED,
-        "provider": LOCALAI_IMAGE_GEN_PROVIDER,
-        "backend_url": LOCALAI_IMAGE_GEN_BACKEND_URL,
-        "ready": False,
-        "status": "stub",
-        "message": "image generation service lane not implemented yet",
-    }
+    if not LOCALAI_IMAGE_GEN_ENABLED:
+        return {
+            "enabled": False,
+            "provider": LOCALAI_IMAGE_GEN_PROVIDER,
+            "backend_url": LOCALAI_IMAGE_GEN_BACKEND_URL,
+            "ready": False,
+            "status": "disabled",
+            "message": "image generation lane disabled",
+        }
+
+    started = perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(f"{LOCALAI_IMAGE_GEN_BACKEND_URL.rstrip('/')}/healthz")
+        latency_ms = int((perf_counter() - started) * 1000)
+        if resp.status_code >= 400:
+            return {
+                "enabled": True,
+                "provider": LOCALAI_IMAGE_GEN_PROVIDER,
+                "backend_url": LOCALAI_IMAGE_GEN_BACKEND_URL,
+                "ready": False,
+                "status": "down",
+                "latency_ms": latency_ms,
+                "message": f"health endpoint returned status {resp.status_code}",
+            }
+        payload = resp.json() if resp.content else {}
+        return {
+            "enabled": True,
+            "provider": LOCALAI_IMAGE_GEN_PROVIDER,
+            "backend_url": LOCALAI_IMAGE_GEN_BACKEND_URL,
+            "ready": True,
+            "status": "ready",
+            "latency_ms": latency_ms,
+            "details": payload,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "enabled": True,
+            "provider": LOCALAI_IMAGE_GEN_PROVIDER,
+            "backend_url": LOCALAI_IMAGE_GEN_BACKEND_URL,
+            "ready": False,
+            "status": "down",
+            "message": str(e),
+        }
+
 
 
 

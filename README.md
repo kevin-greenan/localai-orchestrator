@@ -82,6 +82,7 @@ For full command/flag behavior, see `docs/CLI.md`.
 
 - `localai/`: Python CLI + orchestration logic
 - `model_admin/`: FastAPI app for model management UI
+- `image_gen/`: FastAPI service lane for async image generation jobs
 - `docs/`: operational and feature documentation
 - `docker-compose.yml`: OpenWebUI + model-admin + qdrant services
 - `stack.toml`: user-tunable stack configuration

@@ -110,3 +110,4 @@ Vision command notes:
 
 - `localai test vision-smoke` requires one of `--image` or `--image-url`
 - Vision commands require `[vision].enabled = true` in `stack.toml`
+- If `[image_gen].enabled = true`, `localai up` also starts `image-gen`, `minio`, and `image-redis`

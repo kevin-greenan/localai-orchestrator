@@ -25,6 +25,9 @@ flowchart LR
     openwebui["OpenWebUI container"]
     admin["Model Admin container"]
     qdrant["Qdrant container"]
+    imagegen["Image Gen container"]
+    minio["MinIO container"]
+    imageredis["Image Queue Redis container"]
     subgraph webaddons["Web Search add-ons (optional)"]
       searxng["SearxNG container"]
       redis["Redis container"]
@@ -38,6 +41,9 @@ flowchart LR
   openwebui -->|"vector retrieval"| qdrant
   openwebui -->|"web search requests"| searxng
   searxng -->|"cache"| redis
+  openwebui -->|"image jobs (optional)"| imagegen
+  imagegen -->|"artifacts"| minio
+  imagegen -->|"queue cache"| imageredis
 ```
 
 ## RAG Storage (Qdrant)

@@ -4,6 +4,7 @@ services:
     container_name: openwebui
     depends_on:
       - qdrant
+      - image-gen
     ports:
       - "${LOCALAI_BIND_IP:-127.0.0.1}:${LOCALAI_OPENWEBUI_PORT:-3000}:8080"
     environment:
@@ -27,6 +28,8 @@ services:
       - WEB_SEARCH_CONCURRENT_REQUESTS=${LOCALAI_WEB_SEARCH_CONCURRENT_REQUESTS:-4}
       - WEB_LOADER_CONCURRENT_REQUESTS=${LOCALAI_WEB_LOADER_CONCURRENT_REQUESTS:-2}
       - WEB_SEARCH_TIMEOUT=${LOCALAI_WEB_SEARCH_TIMEOUT_SECONDS:-8}
+      - LOCALAI_IMAGE_GEN_ENABLED=${LOCALAI_IMAGE_GEN_ENABLED:-0}
+      - LOCALAI_IMAGE_GEN_BACKEND_URL=${LOCALAI_IMAGE_GEN_BACKEND_URL:-http://image-gen:8090}
     volumes:
       - openwebui-data:/app/backend/data
     restart: unless-stopped
@@ -97,7 +100,56 @@ services:
         --maxmemory "${LOCALAI_WEB_REDIS_MAXMEMORY_MB:-256}mb"
         --maxmemory-policy "${LOCALAI_WEB_REDIS_MAXMEMORY_POLICY:-allkeys-lru}"
     restart: unless-stopped
+  image-redis:
+    image: redis:7-alpine
+    container_name: localai-image-redis
+    command:
+      - /bin/sh
+      - -lc
+      - >
+        exec redis-server --save "" --appendonly no
+        --maxmemory "${LOCALAI_IMAGE_GEN_REDIS_MAXMEMORY_MB:-256}mb"
+        --maxmemory-policy "allkeys-lru"
+    restart: unless-stopped
+  minio:
+    image: minio/minio:latest
+    container_name: localai-minio
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${LOCALAI_MINIO_ROOT_USER:-localai}
+      - MINIO_ROOT_PASSWORD=${LOCALAI_MINIO_ROOT_PASSWORD:-localai-localai-localai}
+    ports:
+      - "${LOCALAI_BIND_IP:-127.0.0.1}:${LOCALAI_MINIO_PORT:-9000}:9000"
+      - "${LOCALAI_BIND_IP:-127.0.0.1}:${LOCALAI_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+  image-gen:
+    build:
+      context: ./image_gen
+    container_name: localai-image-gen
+    depends_on:
+      - image-redis
+      - minio
+    ports:
+      - "${LOCALAI_BIND_IP:-127.0.0.1}:${LOCALAI_IMAGE_GEN_PORT:-8090}:8090"
+    environment:
+      - LOCALAI_IMAGE_GEN_PROVIDER=${LOCALAI_IMAGE_GEN_PROVIDER:-mock}
+      - LOCALAI_IMAGE_GEN_ARTIFACT_STORE=${LOCALAI_IMAGE_GEN_ARTIFACT_STORE:-filesystem}
+      - LOCALAI_IMAGE_GEN_CONCURRENCY=${LOCALAI_IMAGE_GEN_CONCURRENCY:-1}
+      - LOCALAI_IMAGE_GEN_PUBLIC_BASE_URL=${LOCALAI_IMAGE_GEN_PUBLIC_BASE_URL:-http://127.0.0.1:8090}
+      - LOCALAI_IMAGE_GEN_DATA_DIR=/data
+      - LOCALAI_IMAGE_GEN_REDIS_URL=${LOCALAI_IMAGE_GEN_REDIS_URL:-redis://image-redis:6379/0}
+      - LOCALAI_MINIO_ENDPOINT=${LOCALAI_MINIO_ENDPOINT:-http://minio:9000}
+      - LOCALAI_MINIO_BUCKET=${LOCALAI_MINIO_BUCKET:-generated}
+      - LOCALAI_MINIO_ROOT_USER=${LOCALAI_MINIO_ROOT_USER:-localai}
+      - LOCALAI_MINIO_ROOT_PASSWORD=${LOCALAI_MINIO_ROOT_PASSWORD:-localai-localai-localai}
+    volumes:
+      - image-gen-data:/data
+    restart: unless-stopped
 
 volumes:
   openwebui-data:
   qdrant-data:
+  minio-data:
+  image-gen-data:

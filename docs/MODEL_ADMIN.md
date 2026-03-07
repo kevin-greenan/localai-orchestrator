@@ -17,7 +17,7 @@
 - Class and fit filters (`chat`, `reasoning`, `code`, `embed`, `vision`)
 - Built-in smoke test runner and inference benchmark runner
 - Vision APIs for image analysis, smoke testing, and dataset benchmarking (feature-flagged)
-- Image-gen lane health endpoint for operations visibility (`/api/image-gen/health`)
+- Image-gen lane health endpoint that probes backend readiness (`/api/image-gen/health`)
 
 ## Operational Notes
 

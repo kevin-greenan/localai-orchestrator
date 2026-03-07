@@ -266,7 +266,7 @@ class ModelAdminEndpointTests(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         payload = resp.json()
-        self.assertEqual(payload["status"], "stub")
+        self.assertIn(payload["status"], {"ready", "down"})
         self.assertTrue(payload["enabled"])
         self.assertEqual(payload["provider"], "comfyui")
         self.assertEqual(payload["backend_url"], "http://image-gen:8090")
