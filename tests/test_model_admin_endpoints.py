@@ -57,13 +57,15 @@ class ModelAdminEndpointTests(unittest.TestCase):
         payload = resp.json()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["summary"]["failed"], 0)
-        self.assertEqual(payload["summary"]["skipped"], 3)
+        self.assertEqual(payload["summary"]["skipped"], 5)
         checks = {c["name"]: c for c in payload["checks"]}
         self.assertTrue(checks["ollama_tags"]["ok"])
         self.assertTrue(checks["ollama_ps"]["ok"])
         self.assertTrue(checks["ollama_generate"]["skipped"])
         self.assertTrue(checks["qdrant_health"]["skipped"])
         self.assertTrue(checks["web_stack_health"]["skipped"])
+        self.assertTrue(checks["image_gen_health"]["skipped"])
+        self.assertTrue(checks["image_gen_generate"]["skipped"])
 
     def test_benchmark_requires_any_available_model(self):
         with patch.object(admin, "_ollama_get", new=AsyncMock(return_value={"models": []})):
@@ -270,6 +272,23 @@ class ModelAdminEndpointTests(unittest.TestCase):
         self.assertTrue(payload["enabled"])
         self.assertEqual(payload["provider"], "comfyui")
         self.assertEqual(payload["backend_url"], "http://image-gen:8090")
+
+    def test_image_gen_benchmark_returns_summary(self):
+        with (
+            patch.object(admin, "LOCALAI_IMAGE_GEN_ENABLED", True),
+            patch.object(
+                admin,
+                "_image_gen_generate",
+                new=AsyncMock(side_effect=[{"data": [{"url": "http://x/a.png"}]}, {"data": [{"url": "http://x/b.png"}]}]),
+            ),
+        ):
+            resp = self.client.post("/api/benchmarks/image-gen", json={"iterations": 2, "size": "1024x1024"})
+
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        self.assertEqual(payload["summary"]["iterations"], 2)
+        self.assertEqual(payload["summary"]["failed_runs"], 0)
+        self.assertEqual(len(payload["samples"]), 2)
 
 
 if __name__ == "__main__":

@@ -191,6 +191,13 @@ class VisionBenchmarkRequest(BaseModel):
     timeout_seconds: float = Field(default=120.0, ge=1.0, le=300.0)
 
 
+class ImageGenBenchmarkRequest(BaseModel):
+    prompt: str = "A photorealistic dog running through a green field, natural light."
+    size: str = "1024x1024"
+    iterations: int = Field(default=3, ge=1, le=20)
+    timeout_seconds: float = Field(default=120.0, ge=5.0, le=300.0)
+
+
 def _sum_int(items: list[dict[str, Any]], key: str) -> int:
     total = 0
     for item in items:
@@ -366,6 +373,25 @@ def _resolve_dataset_path(dataset_path: str) -> Path:
     if not p.exists():
         raise HTTPException(status_code=400, detail=f"dataset file not found: {p}")
     return p
+
+
+async def _image_gen_health_probe(timeout_seconds: float = 8.0) -> dict[str, Any]:
+    return await _image_gen_request("GET", "/healthz", timeout_seconds=timeout_seconds)
+
+
+async def _image_gen_generate(prompt: str, size: str, timeout_seconds: float) -> dict[str, Any]:
+    return await _image_gen_request(
+        "POST",
+        "/v1/images/generations",
+        {
+            "model": "localai-imagegen",
+            "prompt": prompt,
+            "n": 1,
+            "size": size,
+            "response_format": "url",
+        },
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _select_benchmark_model(models: list[dict[str, Any]], requested: str) -> str:
@@ -679,6 +705,21 @@ async def _ollama_request(method: str, path: str, payload: dict[str, Any], *, ti
         except Exception:
             return {"ok": True, "raw": resp.text}
     return {"ok": True}
+
+
+async def _image_gen_request(method: str, path: str, payload: dict[str, Any] | None = None, *, timeout_seconds: float = 30.0) -> dict[str, Any]:
+    base = LOCALAI_IMAGE_GEN_BACKEND_URL.rstrip("/")
+    url = f"{base}{path}"
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        resp = await client.request(method, url, json=payload)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    if not resp.content:
+        return {"ok": True}
+    try:
+        return resp.json()
+    except Exception:
+        return {"ok": True, "raw": resp.text}
 
 
 async def _tracked_action(
@@ -1064,6 +1105,41 @@ async def run_smoke_tests(req: SmokeTestRequest) -> dict[str, Any]:
     else:
         checks.append({"name": "web_stack_health", "ok": True, "duration_ms": 0, "detail": "skipped (web disabled)", "skipped": True})
 
+    if LOCALAI_IMAGE_GEN_ENABLED:
+        t0 = perf_counter()
+        try:
+            health = await _image_gen_health_probe(timeout_seconds=8.0)
+            ready = bool(health.get("provider_ready", health.get("status") == "ok"))
+            checks.append(
+                {
+                    "name": "image_gen_health",
+                    "ok": ready,
+                    "duration_ms": int((perf_counter() - t0) * 1000),
+                    "detail": "" if ready else str(health.get("provider_detail") or health.get("status") or "unavailable"),
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            checks.append({"name": "image_gen_health", "ok": False, "duration_ms": int((perf_counter() - t0) * 1000), "detail": str(e)})
+
+        t0 = perf_counter()
+        try:
+            out = await _image_gen_generate("A small brown dog, studio photo.", "512x512", 45.0)
+            data = out.get("data", []) if isinstance(out, dict) else []
+            ok = isinstance(data, list) and len(data) > 0
+            checks.append(
+                {
+                    "name": "image_gen_generate",
+                    "ok": ok,
+                    "duration_ms": int((perf_counter() - t0) * 1000),
+                    "detail": "" if ok else "no image data returned",
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            checks.append({"name": "image_gen_generate", "ok": False, "duration_ms": int((perf_counter() - t0) * 1000), "detail": str(e)})
+    else:
+        checks.append({"name": "image_gen_health", "ok": True, "duration_ms": 0, "detail": "skipped (image-gen disabled)", "skipped": True})
+        checks.append({"name": "image_gen_generate", "ok": True, "duration_ms": 0, "detail": "skipped (image-gen disabled)", "skipped": True})
+
     passed = sum(1 for c in checks if c.get("ok"))
     skipped = sum(1 for c in checks if c.get("skipped"))
     failed = len(checks) - passed
@@ -1139,6 +1215,61 @@ async def run_benchmark(req: BenchmarkRequest) -> dict[str, Any]:
             "tokens_per_second_avg": round(sum(tokens_per_second_values) / len(tokens_per_second_values), 2)
             if tokens_per_second_values
             else 0.0,
+        },
+        "samples": samples,
+    }
+
+
+@app.post("/api/benchmarks/image-gen")
+async def run_image_gen_benchmark(req: ImageGenBenchmarkRequest) -> dict[str, Any]:
+    if not LOCALAI_IMAGE_GEN_ENABLED:
+        raise HTTPException(status_code=503, detail="image generation lane disabled")
+
+    samples: list[dict[str, Any]] = []
+    latencies: list[float] = []
+    failures = 0
+
+    for i in range(req.iterations):
+        t0 = perf_counter()
+        try:
+            out = await _image_gen_generate(req.prompt.strip(), req.size.strip() or "1024x1024", req.timeout_seconds)
+            wall_ms = round((perf_counter() - t0) * 1000.0, 2)
+            data = out.get("data", []) if isinstance(out, dict) else []
+            ok = isinstance(data, list) and len(data) > 0
+            if ok:
+                latencies.append(wall_ms)
+            else:
+                failures += 1
+            samples.append(
+                {
+                    "run": i + 1,
+                    "ok": ok,
+                    "latency_ms": wall_ms,
+                    "images_returned": len(data) if isinstance(data, list) else 0,
+                    "detail": "" if ok else "no image data returned",
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            failures += 1
+            samples.append(
+                {
+                    "run": i + 1,
+                    "ok": False,
+                    "latency_ms": round((perf_counter() - t0) * 1000.0, 2),
+                    "images_returned": 0,
+                    "detail": str(e),
+                }
+            )
+
+    return {
+        "provider": LOCALAI_IMAGE_GEN_PROVIDER,
+        "summary": {
+            "iterations": req.iterations,
+            "successful_runs": len(latencies),
+            "failed_runs": failures,
+            "latency_ms_avg": round(sum(latencies) / len(latencies), 2) if latencies else 0.0,
+            "latency_ms_p95": round(_percentile(latencies, 95), 2) if latencies else 0.0,
+            "success_rate": round((len(latencies) / req.iterations) * 100.0, 2) if req.iterations > 0 else 0.0,
         },
         "samples": samples,
     }
@@ -1797,31 +1928,28 @@ async def models_page() -> str:
 @app.get("/tests", response_class=HTMLResponse)
 async def tests_page() -> str:
     content = """
-      <div class=\"section-title\">Unit Tests / Smoke Checks</div>
+      <div class=\"section-title\">Stack Smoke Checks</div>
       <div class=\"controls\">
         <input id=\"smoke-model\" placeholder=\"Optional model override (e.g. llama3.2:3b)\" />
         <button class=\"ok\" onclick=\"runSmoke()\">Run Smoke Tests</button>
         <span id=\"smoke-overall\" class=\"chip\">idle</span>
       </div>
-
       <div class=\"grid\">
         <div class=\"card\"><div class=\"label\">Passed</div><div id=\"s-passed\" class=\"value\">-</div></div>
         <div class=\"card\"><div class=\"label\">Failed</div><div id=\"s-failed\" class=\"value\">-</div></div>
         <div class=\"card\"><div class=\"label\">Skipped</div><div id=\"s-skipped\" class=\"value\">-</div></div>
         <div class=\"card\"><div class=\"label\">Duration</div><div id=\"s-duration\" class=\"value\">-</div></div>
       </div>
-
       <table>
         <thead><tr><th>Check</th><th>Status</th><th>Duration</th><th>Model</th><th>Detail</th></tr></thead>
         <tbody id=\"smoke-results\"><tr><td colspan=\"5\" class=\"muted\">No smoke run yet.</td></tr></tbody>
       </table>
-
       <details class=\"advanced\">
         <summary>Raw Smoke JSON</summary>
         <pre id=\"smoke-log\">Smoke tests idle.</pre>
       </details>
 
-      <div class=\"section-title\">Benchmarking</div>
+      <div class=\"section-title\">Text Benchmarking</div>
       <div class=\"controls\">
         <input id=\"bench-model\" placeholder=\"Optional model override (e.g. llama3.2:3b)\" />
         <input id=\"bench-iters\" type=\"number\" min=\"1\" max=\"40\" value=\"5\" placeholder=\"iterations\" />
@@ -1833,137 +1961,207 @@ async def tests_page() -> str:
         <button class=\"warn\" onclick=\"runBenchmark()\">Run Benchmark</button>
         <span id=\"bench-overall\" class=\"chip\">idle</span>
       </div>
-
       <div class=\"grid\">
         <div class=\"card\"><div class=\"label\">Iterations</div><div id=\"b-iters\" class=\"value\">-</div></div>
         <div class=\"card\"><div class=\"label\">Latency Avg</div><div id=\"b-lat-avg\" class=\"value\">-</div></div>
         <div class=\"card\"><div class=\"label\">Latency P95</div><div id=\"b-lat-p95\" class=\"value\">-</div></div>
         <div class=\"card\"><div class=\"label\">Tokens/sec Avg</div><div id=\"b-tps\" class=\"value\">-</div></div>
       </div>
-
       <table>
         <thead><tr><th>Run</th><th>Status</th><th>Latency</th><th>Tokens/s</th><th>Eval Tokens</th><th>Detail</th></tr></thead>
         <tbody id=\"bench-results\"><tr><td colspan=\"6\" class=\"muted\">No benchmark run yet.</td></tr></tbody>
       </table>
-
       <details class=\"advanced\">
-        <summary>Raw Benchmark JSON</summary>
+        <summary>Raw Text Benchmark JSON</summary>
         <pre id=\"bench-log\">Benchmark idle.</pre>
+      </details>
+
+      <div class=\"section-title\">Vision Tests</div>
+      <div class=\"controls\">
+        <input id=\"vision-model\" placeholder=\"Vision model (default: llava:latest)\" />
+        <input id=\"vision-image-url\" placeholder=\"Image URL (optional if base64 provided)\" />
+      </div>
+      <div class=\"controls\">
+        <textarea id=\"vision-image-base64\" rows=\"2\">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7nY9kAAAAASUVORK5CYII=</textarea>
+      </div>
+      <div class=\"controls\">
+        <textarea id=\"vision-prompt\" rows=\"2\">Describe this image in one sentence.</textarea>
+      </div>
+      <div class=\"controls\">
+        <button class=\"ok\" onclick=\"runVisionSmoke()\">Run Vision Smoke</button>
+        <span id=\"vision-smoke-overall\" class=\"chip\">idle</span>
+      </div>
+      <table>
+        <thead><tr><th>Check</th><th>Status</th><th>Duration</th><th>Model</th><th>Detail</th></tr></thead>
+        <tbody id=\"vision-smoke-results\"><tr><td colspan=\"5\" class=\"muted\">No vision smoke run yet.</td></tr></tbody>
+      </table>
+      <div class=\"controls\">
+        <input id=\"vision-bench-dataset\" value=\"tests/fixtures/vision/smoke.jsonl\" placeholder=\"Dataset JSONL path\" />
+        <input id=\"vision-bench-iters\" type=\"number\" min=\"1\" max=\"200\" value=\"5\" />
+        <button class=\"warn\" onclick=\"runVisionBenchmark()\">Run Vision Benchmark</button>
+        <span id=\"vision-bench-overall\" class=\"chip\">idle</span>
+      </div>
+      <div class=\"grid\">
+        <div class=\"card\"><div class=\"label\">Iterations</div><div id=\"vb-iters\" class=\"value\">-</div></div>
+        <div class=\"card\"><div class=\"label\">Latency Avg</div><div id=\"vb-lat-avg\" class=\"value\">-</div></div>
+        <div class=\"card\"><div class=\"label\">Latency P95</div><div id=\"vb-lat-p95\" class=\"value\">-</div></div>
+        <div class=\"card\"><div class=\"label\">Pass Rate</div><div id=\"vb-pass-rate\" class=\"value\">-</div></div>
+      </div>
+      <table>
+        <thead><tr><th>Run</th><th>Status</th><th>Latency</th><th>Score</th><th>Tokens/s</th><th>Detail</th></tr></thead>
+        <tbody id=\"vision-bench-results\"><tr><td colspan=\"6\" class=\"muted\">No vision benchmark samples returned.</td></tr></tbody>
+      </table>
+      <details class=\"advanced\">
+        <summary>Raw Vision JSON</summary>
+        <pre id=\"vision-log\">Vision tests idle.</pre>
+      </details>
+
+      <div class=\"section-title\">Image Generation Benchmark</div>
+      <div class=\"controls\">
+        <input id=\"imgbench-iters\" type=\"number\" min=\"1\" max=\"20\" value=\"3\" />
+        <input id=\"imgbench-size\" value=\"1024x1024\" placeholder=\"1024x1024\" />
+      </div>
+      <div class=\"controls\">
+        <textarea id=\"imgbench-prompt\" rows=\"2\">A photorealistic dog running through a green field, natural light.</textarea>
+      </div>
+      <div class=\"controls\">
+        <button class=\"warn\" onclick=\"runImageGenBenchmark()\">Run Image-Gen Benchmark</button>
+        <span id=\"imgbench-overall\" class=\"chip\">idle</span>
+      </div>
+      <div class=\"grid\">
+        <div class=\"card\"><div class=\"label\">Iterations</div><div id=\"ib-iters\" class=\"value\">-</div></div>
+        <div class=\"card\"><div class=\"label\">Latency Avg</div><div id=\"ib-lat-avg\" class=\"value\">-</div></div>
+        <div class=\"card\"><div class=\"label\">Latency P95</div><div id=\"ib-lat-p95\" class=\"value\">-</div></div>
+        <div class=\"card\"><div class=\"label\">Success Rate</div><div id=\"ib-success\" class=\"value\">-</div></div>
+      </div>
+      <table>
+        <thead><tr><th>Run</th><th>Status</th><th>Latency</th><th>Images</th><th>Detail</th></tr></thead>
+        <tbody id=\"imgbench-results\"><tr><td colspan=\"5\" class=\"muted\">No image-gen benchmark samples returned.</td></tr></tbody>
+      </table>
+      <details class=\"advanced\">
+        <summary>Raw Image-Gen Benchmark JSON</summary>
+        <pre id=\"imgbench-log\">Image-gen benchmark idle.</pre>
       </details>
     """
 
     script = """
     <script>
-      function esc(s){
-        return String(s ?? '')
-          .replaceAll('&', '&amp;')
-          .replaceAll('<', '&lt;')
-          .replaceAll('>', '&gt;')
-          .replaceAll('"', '&quot;')
-          .replaceAll("'", '&#39;');
-      }
+      function esc(s){ return String(s ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
       function setText(id, value){ const el=document.getElementById(id); if(el) el.textContent=value; }
       function setBadge(id, state){
-        const el=document.getElementById(id);
-        if(!el) return;
+        const el=document.getElementById(id); if(!el) return;
         if(state === 'pass'){ el.className='chip fit-great'; el.textContent='pass'; return; }
         if(state === 'fail'){ el.className='chip fit-heavy'; el.textContent='fail'; return; }
         if(state === 'running'){ el.className='chip fit-tight'; el.textContent='running'; return; }
         el.className='chip'; el.textContent='idle';
       }
 
-      function renderSmokeChecks(checks){
-        const body=document.getElementById('smoke-results');
-        if(!body) return;
-        if(!checks || checks.length === 0){
-          body.innerHTML='<tr><td colspan=\"5\" class=\"muted\">No checks returned.</td></tr>';
-          return;
-        }
+      function renderSmokeChecks(bodyId, checks){
+        const body=document.getElementById(bodyId); if(!body) return;
+        if(!checks || checks.length === 0){ body.innerHTML='<tr><td colspan=\"5\" class=\"muted\">No checks returned.</td></tr>'; return; }
         body.innerHTML = checks.map((c) => {
           const state = c.skipped ? '<span class=\"chip\">skipped</span>' : (c.ok ? '<span class=\"chip fit-great\">pass</span>' : '<span class=\"chip fit-heavy\">fail</span>');
-          const detail = c.detail ? esc(c.detail) : '';
-          return `<tr>
-            <td>${esc(c.name || '-')}</td>
-            <td>${state}</td>
-            <td>${Number(c.duration_ms ?? 0)} ms</td>
-            <td>${esc(c.model || '-')}</td>
-            <td class=\"muted\">${detail}</td>
-          </tr>`;
+          return `<tr><td>${esc(c.name || '-')}</td><td>${state}</td><td>${Number(c.duration_ms ?? 0)} ms</td><td>${esc(c.model || '-')}</td><td class=\"muted\">${esc(c.detail || '')}</td></tr>`;
         }).join('');
       }
 
-      function renderBenchmarkRuns(samples){
-        const body=document.getElementById('bench-results');
-        if(!body) return;
-        if(!samples || samples.length === 0){
-          body.innerHTML='<tr><td colspan=\"6\" class=\"muted\">No benchmark samples returned.</td></tr>';
-          return;
-        }
+      function renderTextBenchmarkRuns(samples){
+        const body=document.getElementById('bench-results'); if(!body) return;
+        if(!samples || samples.length === 0){ body.innerHTML='<tr><td colspan=\"6\" class=\"muted\">No benchmark samples returned.</td></tr>'; return; }
         body.innerHTML = samples.map((s) => {
           const status = s.ok ? '<span class=\"chip fit-great\">pass</span>' : '<span class=\"chip fit-heavy\">fail</span>';
-          const latency = Number(s.latency_ms ?? 0).toFixed(2) + ' ms';
-          const tps = s.tokens_per_second > 0 ? Number(s.tokens_per_second).toFixed(2) : '-';
-          const evalCount = s.eval_count ?? '-';
           const detail = s.ok ? `${Number(s.total_duration_ms ?? 0).toFixed(2)} ms total` : esc(s.error || '');
-          return `<tr>
-            <td>${s.run ?? '-'}</td>
-            <td>${status}</td>
-            <td>${latency}</td>
-            <td>${tps}</td>
-            <td>${evalCount}</td>
-            <td class=\"muted\">${detail}</td>
-          </tr>`;
+          const tps = s.tokens_per_second > 0 ? Number(s.tokens_per_second).toFixed(2) : '-';
+          return `<tr><td>${s.run ?? '-'}</td><td>${status}</td><td>${Number(s.latency_ms ?? 0).toFixed(2)} ms</td><td>${tps}</td><td>${s.eval_count ?? '-'}</td><td class=\"muted\">${detail}</td></tr>`;
+        }).join('');
+      }
+
+      function renderVisionBenchmarkRuns(samples){
+        const body=document.getElementById('vision-bench-results'); if(!body) return;
+        if(!samples || samples.length === 0){ body.innerHTML='<tr><td colspan=\"6\" class=\"muted\">No vision benchmark samples returned.</td></tr>'; return; }
+        body.innerHTML = samples.map((s) => {
+          const status = s.ok ? '<span class=\"chip fit-great\">pass</span>' : '<span class=\"chip fit-heavy\">fail</span>';
+          const score = s.score_pass ? '<span class=\"chip fit-great\">pass</span>' : '<span class=\"chip fit-heavy\">fail</span>';
+          const tps = s.tokens_per_second > 0 ? Number(s.tokens_per_second).toFixed(2) : '-';
+          const detail = s.ok ? esc((s.response || '').slice(0, 120)) : esc(s.error || '');
+          return `<tr><td>${s.run ?? '-'}</td><td>${status}</td><td>${Number(s.latency_ms ?? 0).toFixed(2)} ms</td><td>${score}</td><td>${tps}</td><td class=\"muted\">${detail}</td></tr>`;
+        }).join('');
+      }
+
+      function renderImageGenBenchmarkRuns(samples){
+        const body=document.getElementById('imgbench-results'); if(!body) return;
+        if(!samples || samples.length === 0){ body.innerHTML='<tr><td colspan=\"5\" class=\"muted\">No image-gen benchmark samples returned.</td></tr>'; return; }
+        body.innerHTML = samples.map((s) => {
+          const status = s.ok ? '<span class=\"chip fit-great\">pass</span>' : '<span class=\"chip fit-heavy\">fail</span>';
+          return `<tr><td>${s.run ?? '-'}</td><td>${status}</td><td>${Number(s.latency_ms ?? 0).toFixed(2)} ms</td><td>${s.images_returned ?? 0}</td><td class=\"muted\">${esc(s.detail || '')}</td></tr>`;
         }).join('');
       }
 
       async function runSmoke(){
         const model=(document.getElementById('smoke-model').value || '').trim();
-        const box=document.getElementById('smoke-log');
-        setBadge('smoke-overall', 'running');
-        box.textContent='Running smoke tests...';
+        const box=document.getElementById('smoke-log'); setBadge('smoke-overall', 'running'); box.textContent='Running smoke tests...';
         try {
           const r=await fetch('/api/tests/smoke', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ model }) });
-          const data=await r.json();
-          if(!r.ok) throw new Error(JSON.stringify(data));
+          const data=await r.json(); if(!r.ok) throw new Error(JSON.stringify(data));
           const s=data.summary || {};
-          setText('s-passed', String(s.passed ?? '-'));
-          setText('s-failed', String(s.failed ?? '-'));
-          setText('s-skipped', String(s.skipped ?? '-'));
-          setText('s-duration', s.duration_ms >= 0 ? `${s.duration_ms} ms` : '-');
-          renderSmokeChecks(data.checks || []);
-          setBadge('smoke-overall', data.ok ? 'pass' : 'fail');
-          box.textContent=JSON.stringify(data, null, 2);
-        } catch(e) {
-          setBadge('smoke-overall', 'fail');
-          renderSmokeChecks([]);
-          box.textContent=`Smoke tests failed: ${e}`;
-        }
+          setText('s-passed', String(s.passed ?? '-')); setText('s-failed', String(s.failed ?? '-')); setText('s-skipped', String(s.skipped ?? '-')); setText('s-duration', `${s.duration_ms ?? 0} ms`);
+          renderSmokeChecks('smoke-results', data.checks || []); setBadge('smoke-overall', data.ok ? 'pass' : 'fail'); box.textContent=JSON.stringify(data, null, 2);
+        } catch(e) { setBadge('smoke-overall', 'fail'); renderSmokeChecks('smoke-results', []); box.textContent=`Smoke tests failed: ${e}`; }
       }
 
       async function runBenchmark(){
         const model=(document.getElementById('bench-model').value || '').trim();
         const prompt=(document.getElementById('bench-prompt').value || '').trim();
         const iterations=Number(document.getElementById('bench-iters').value || 5);
-        const box=document.getElementById('bench-log');
-        setBadge('bench-overall', 'running');
-        box.textContent='Running benchmark...';
+        const box=document.getElementById('bench-log'); setBadge('bench-overall', 'running'); box.textContent='Running benchmark...';
         try {
           const r=await fetch('/api/benchmarks/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ model, prompt, iterations }) });
-          const data=await r.json();
-          if(!r.ok) throw new Error(JSON.stringify(data));
+          const data=await r.json(); if(!r.ok) throw new Error(JSON.stringify(data));
           const s=data.summary || {};
-          setText('b-iters', String(s.iterations ?? '-'));
-          setText('b-lat-avg', s.latency_ms_avg >= 0 ? `${s.latency_ms_avg} ms` : '-');
-          setText('b-lat-p95', s.latency_ms_p95 >= 0 ? `${s.latency_ms_p95} ms` : '-');
-          setText('b-tps', s.tokens_per_second_avg > 0 ? String(s.tokens_per_second_avg) : '-');
-          renderBenchmarkRuns(data.samples || []);
-          setBadge('bench-overall', (s.failed_runs ?? 0) === 0 ? 'pass' : 'fail');
-          box.textContent=JSON.stringify(data, null, 2);
-        } catch(e) {
-          setBadge('bench-overall', 'fail');
-          renderBenchmarkRuns([]);
-          box.textContent=`Benchmark failed: ${e}`;
-        }
+          setText('b-iters', String(s.iterations ?? '-')); setText('b-lat-avg', `${s.latency_ms_avg ?? 0} ms`); setText('b-lat-p95', `${s.latency_ms_p95 ?? 0} ms`); setText('b-tps', s.tokens_per_second_avg > 0 ? String(s.tokens_per_second_avg) : '-');
+          renderTextBenchmarkRuns(data.samples || []); setBadge('bench-overall', (s.failed_runs ?? 0) === 0 ? 'pass' : 'fail'); box.textContent=JSON.stringify(data, null, 2);
+        } catch(e) { setBadge('bench-overall', 'fail'); renderTextBenchmarkRuns([]); box.textContent=`Benchmark failed: ${e}`; }
+      }
+
+      async function runVisionSmoke(){
+        const model=(document.getElementById('vision-model').value || '').trim();
+        const prompt=(document.getElementById('vision-prompt').value || '').trim();
+        const image_url=(document.getElementById('vision-image-url').value || '').trim();
+        const image_base64=(document.getElementById('vision-image-base64').value || '').trim();
+        const box=document.getElementById('vision-log'); setBadge('vision-smoke-overall', 'running'); box.textContent='Running vision smoke...';
+        try {
+          const r=await fetch('/api/tests/vision-smoke', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ model, prompt, image_url, image_base64 }) });
+          const data=await r.json(); if(!r.ok) throw new Error(JSON.stringify(data));
+          renderSmokeChecks('vision-smoke-results', data.checks || []); setBadge('vision-smoke-overall', data.ok ? 'pass' : 'fail'); box.textContent=JSON.stringify(data, null, 2);
+        } catch(e) { setBadge('vision-smoke-overall', 'fail'); renderSmokeChecks('vision-smoke-results', []); box.textContent=`Vision smoke failed: ${e}`; }
+      }
+
+      async function runVisionBenchmark(){
+        const model=(document.getElementById('vision-model').value || '').trim();
+        const dataset_path=(document.getElementById('vision-bench-dataset').value || '').trim();
+        const iterations=Number(document.getElementById('vision-bench-iters').value || 5);
+        const box=document.getElementById('vision-log'); setBadge('vision-bench-overall', 'running'); box.textContent='Running vision benchmark...';
+        try {
+          const r=await fetch('/api/tests/vision-benchmark', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ model, dataset_path, iterations }) });
+          const data=await r.json(); if(!r.ok) throw new Error(JSON.stringify(data));
+          const s=data.summary || {};
+          setText('vb-iters', String(s.iterations_executed ?? '-')); setText('vb-lat-avg', `${s.latency_ms_avg ?? 0} ms`); setText('vb-lat-p95', `${s.latency_ms_p95 ?? 0} ms`); setText('vb-pass-rate', `${s.score_pass_rate ?? 0}%`);
+          renderVisionBenchmarkRuns(data.samples || []); setBadge('vision-bench-overall', (s.failed_runs ?? 0) === 0 ? 'pass' : 'fail'); box.textContent=JSON.stringify(data, null, 2);
+        } catch(e) { setBadge('vision-bench-overall', 'fail'); renderVisionBenchmarkRuns([]); box.textContent=`Vision benchmark failed: ${e}`; }
+      }
+
+      async function runImageGenBenchmark(){
+        const prompt=(document.getElementById('imgbench-prompt').value || '').trim();
+        const size=(document.getElementById('imgbench-size').value || '').trim();
+        const iterations=Number(document.getElementById('imgbench-iters').value || 3);
+        const box=document.getElementById('imgbench-log'); setBadge('imgbench-overall', 'running'); box.textContent='Running image-gen benchmark...';
+        try {
+          const r=await fetch('/api/benchmarks/image-gen', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ prompt, size, iterations }) });
+          const data=await r.json(); if(!r.ok) throw new Error(JSON.stringify(data));
+          const s=data.summary || {};
+          setText('ib-iters', String(s.iterations ?? '-')); setText('ib-lat-avg', `${s.latency_ms_avg ?? 0} ms`); setText('ib-lat-p95', `${s.latency_ms_p95 ?? 0} ms`); setText('ib-success', `${s.success_rate ?? 0}%`);
+          renderImageGenBenchmarkRuns(data.samples || []); setBadge('imgbench-overall', (s.failed_runs ?? 0) === 0 ? 'pass' : 'fail'); box.textContent=JSON.stringify(data, null, 2);
+        } catch(e) { setBadge('imgbench-overall', 'fail'); renderImageGenBenchmarkRuns([]); box.textContent=`Image-gen benchmark failed: ${e}`; }
       }
     </script>
     """
