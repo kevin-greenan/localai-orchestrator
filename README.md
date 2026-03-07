@@ -123,13 +123,19 @@ What each flag does:
 - `--sync-models`: runs `ollama pull` for all configured models in `stack.toml`
 - `--warmup`: runs one test inference on `warmup_model` after Ollama is reachable
 - `--expose [PORT]`: binds services to `0.0.0.0` (OpenWebUI on `:PORT`, default `80`; Model Admin on `:3010`)
-- `--no-webui`: starts `model-admin` + `qdrant` (OpenWebUI is not started)
+- `--no-webui`: starts `model-admin` + `qdrant` only (OpenWebUI and web-search add-ons are not started)
 - `--web-search`: enables web search for this run and starts `searxng` + `redis`
 - `--boost`: applies a higher-utilization runtime profile (parallelism/queue/keep-alive, and model residency when RAM allows)
   - Also applies more aggressive Qdrant and web-search profiles unless manually overridden
 - `--rag-preset {fast,deep}`: sets OpenWebUI RAG defaults
   - `fast` (default): lower latency (`top_k=2`, `chunk_size=800`, no hybrid search)
   - `deep`: higher recall/context (`top_k=5`, `chunk_size=1200`, hybrid search on)
+
+Flag compatibility notes:
+
+- `--web-search` cannot be combined with `--no-webui`.
+- `--rag-preset` cannot be combined with `--no-webui`.
+- `--expose` can be combined with `--no-webui` to expose Model Admin and Qdrant; when OpenWebUI is disabled, the optional `PORT` value is ignored.
 
 ### Stop Modes
 
