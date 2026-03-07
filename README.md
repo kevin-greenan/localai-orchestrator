@@ -6,7 +6,8 @@ macOS-first orchestration for Apple Silicon: run Ollama natively (Metal path) an
 
 - Starts `ollama serve` as a macOS `launchd` service
 - Runs OpenWebUI + Model Admin + Qdrant via Docker Compose
-- Auto-tunes Ollama + Qdrant defaults from host hardware on startup
+- Optional web-search add-ons: SearxNG (+ Redis cache)
+- Auto-tunes Ollama + Qdrant + web-search defaults from host hardware on startup
 - Provides one CLI for lifecycle, checks, model sync, and warmup
 - Exposes a Model Admin web UI with:
   - pull/update/delete model actions
@@ -64,12 +65,14 @@ By default, Docker ports are bound to loopback only:
 - `127.0.0.1:3000` (OpenWebUI)
 - `127.0.0.1:3010` (Model Admin)
 - `127.0.0.1:6333` (Qdrant)
+- `127.0.0.1:8082` (SearxNG, only when `[web].enabled=true`)
 
 If you run `localai up --expose` (or `localai up --expose <port>`), services bind to all interfaces:
 
 - `0.0.0.0:80` (OpenWebUI)
 - `0.0.0.0:3010` (Model Admin)
 - `0.0.0.0:6333` (Qdrant)
+- `0.0.0.0:8082` (SearxNG, only when `[web].enabled=true`)
 
 Optional hardening config lives in `.env` (template: `.env.example`):
 
@@ -89,6 +92,9 @@ If both Model Admin credentials are set, the Model Admin UI/API requires HTTP Ba
 ```bash
 # Full startup (recommended first run)
 localai up --sync-models --warmup
+
+# Full startup with web search enabled for this run
+localai up --web-search --sync-models --warmup
 
 # Higher-utilization mode (good for larger Apple Silicon machines)
 localai up --boost --warmup
@@ -118,8 +124,9 @@ What each flag does:
 - `--warmup`: runs one test inference on `warmup_model` after Ollama is reachable
 - `--expose [PORT]`: binds services to `0.0.0.0` (OpenWebUI on `:PORT`, default `80`; Model Admin on `:3010`)
 - `--no-webui`: starts `model-admin` + `qdrant` (OpenWebUI is not started)
+- `--web-search`: enables web search for this run and starts `searxng` + `redis`
 - `--boost`: applies a higher-utilization runtime profile (parallelism/queue/keep-alive, and model residency when RAM allows)
-  - Also applies a more aggressive Qdrant profile (segment/index/HNSW settings) unless manually overridden
+  - Also applies more aggressive Qdrant and web-search profiles unless manually overridden
 - `--rag-preset {fast,deep}`: sets OpenWebUI RAG defaults
   - `fast` (default): lower latency (`top_k=2`, `chunk_size=800`, no hybrid search)
   - `deep`: higher recall/context (`top_k=5`, `chunk_size=1200`, hybrid search on)
@@ -151,10 +158,12 @@ localai doctor
   - OpenWebUI: <http://127.0.0.1:3000>
   - Model Admin: <http://127.0.0.1:3010>
   - Qdrant API: <http://127.0.0.1:6333>
+  - SearxNG: <http://127.0.0.1:8082> (only when web search is enabled)
 - Exposed mode (`localai up --expose [PORT]`):
   - OpenWebUI: `http://<host-ip>:<PORT>` (defaults to `80` when omitted)
   - Model Admin: `http://<host-ip>:3010`
   - Qdrant API: `http://<host-ip>:6333`
+  - SearxNG: `http://<host-ip>:8082` (only when web search is enabled)
 
 ## RAG Storage (Qdrant)
 
@@ -185,6 +194,29 @@ Persistence note:
 - Qdrant collections/vectors persist across container rebuilds/restarts.
 - Data is removed only if you explicitly remove volumes (for example `docker compose down -v`).
 
+## Web Search (SearxNG + Redis)
+
+Web search is optional and disabled by default.
+
+Enable in `stack.toml`:
+
+```toml
+[web]
+enabled = true
+engine = "searxng"
+searxng_query_url = "http://searxng:8080/search?q=<query>&format=json"
+
+[web.redis]
+maxmemory_mb = 512
+```
+
+Behavior:
+
+- When `[web].enabled = true`, `localai up` includes `searxng` automatically.
+- When web search is enabled, `localai up` includes `redis` automatically.
+- `localai up --no-webui` skips OpenWebUI and web-search add-ons.
+- OpenWebUI env wiring is auto-generated in `.localai.env`.
+
 ## Configuration
 
 Main config: `stack.toml`
@@ -195,6 +227,8 @@ Key sections:
 - `[docker]`: compose file and service list
 - `[rag]`: RAG preset (`fast` or `deep`) used for OpenWebUI retrieval defaults
 - `[rag.qdrant]`: qdrant enable/disable and optional manual tuning overrides
+- `[web]`: web-search enablement and OpenWebUI/SearxNG defaults
+- `[web.redis]`: Redis cache sizing policy for web-search workloads
 - `[health]`: health-check URLs
 - `[tuning]`: auto-tuning behavior
 
@@ -216,6 +250,10 @@ On `localai up`, host hardware is detected and these are auto-derived:
 - Qdrant `indexing_threshold_kb`
 - Qdrant `hnsw_m`
 - Qdrant `hnsw_ef_construct`
+- Web search `result_count`
+- Web search request/loader concurrency
+- Web search request timeout
+- Redis `maxmemory_mb` (when web search is enabled)
 
 Default policy:
 
@@ -225,7 +263,7 @@ enabled = true
 respect_user_values = true
 ```
 
-If you set manual values in `[native.ollama]` or `[rag.qdrant]` and keep `respect_user_values = true`, your values win.
+If you set manual values in `[native.ollama]`, `[rag.qdrant]`, `[web]`, or `[web.redis]` and keep `respect_user_values = true`, your values win.
 
 RAG preset persistence note:
 
@@ -243,6 +281,7 @@ Generated at runtime:
   - `~/.localai/logs/ollama.err.log`
 - Compose env generated by CLI: `.localai.env`
   - includes `LOCALAI_HOST_RAM_GB` for Model Admin fit badges
+  - includes generated OpenWebUI + SearxNG + Redis runtime tuning values
 
 ## Model Admin Notes
 
@@ -278,6 +317,9 @@ Security note:
   - Confirm `ollama` is in `PATH` (`which ollama`)
 - OpenWebUI asks for admin setup repeatedly:
   - Do not remove volumes (`docker compose down -v` clears persisted data)
+- OpenWebUI web search returns no results:
+  - Confirm `[web].enabled = true` and `localai up` started the `searxng` service.
+  - Verify `SEARXNG_QUERY_URL` contains `<query>` and includes `format=json`.
 - Qdrant collections missing after restart:
   - Ensure you did not run `docker compose down -v` (removes `qdrant-data` volume)
 - Model Admin changes not reflected after code updates:

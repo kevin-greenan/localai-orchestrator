@@ -64,6 +64,30 @@ class RagConfig:
 
 
 @dataclass(slots=True)
+class WebRedisConfig:
+    maxmemory_mb: int
+    maxmemory_policy: str
+    user_set_maxmemory_mb: bool
+    user_set_maxmemory_policy: bool
+
+
+@dataclass(slots=True)
+class WebConfig:
+    enabled: bool
+    engine: str
+    searxng_query_url: str
+    result_count: int
+    search_concurrent_requests: int
+    loader_concurrent_requests: int
+    request_timeout_seconds: int
+    redis: WebRedisConfig
+    user_set_result_count: bool
+    user_set_search_concurrent_requests: bool
+    user_set_loader_concurrent_requests: bool
+    user_set_request_timeout_seconds: bool
+
+
+@dataclass(slots=True)
 class StackConfig:
     name: str
     root: Path
@@ -72,6 +96,7 @@ class StackConfig:
     health: HealthConfig
     tuning: TuningConfig
     rag: RagConfig
+    web: WebConfig
 
 
 DEFAULT_STACK = "stack.toml"
@@ -90,6 +115,8 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
     tuning_raw = raw.get("tuning", {})
     rag_raw = raw.get("rag", {})
     qdrant_raw = rag_raw.get("qdrant", {})
+    web_raw = raw.get("web", {})
+    web_redis_raw = web_raw.get("redis", {})
     preset_raw = str(rag_raw.get("preset", "fast")).strip().lower()
     preset = preset_raw if preset_raw in {"fast", "deep"} else "fast"
 
@@ -145,6 +172,28 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
         preset=preset,
         qdrant=qdrant,
     )
+    web_redis = WebRedisConfig(
+        maxmemory_mb=int(web_redis_raw.get("maxmemory_mb", 256)),
+        maxmemory_policy=str(web_redis_raw.get("maxmemory_policy", "allkeys-lru")),
+        user_set_maxmemory_mb="maxmemory_mb" in web_redis_raw,
+        user_set_maxmemory_policy="maxmemory_policy" in web_redis_raw,
+    )
+    web = WebConfig(
+        enabled=bool(web_raw.get("enabled", False)),
+        engine=str(web_raw.get("engine", "searxng")).strip().lower(),
+        searxng_query_url=str(
+            web_raw.get("searxng_query_url", "http://searxng:8080/search?q=<query>&format=json")
+        ).strip(),
+        result_count=int(web_raw.get("result_count", 3)),
+        search_concurrent_requests=int(web_raw.get("search_concurrent_requests", 4)),
+        loader_concurrent_requests=int(web_raw.get("loader_concurrent_requests", 2)),
+        request_timeout_seconds=int(web_raw.get("request_timeout_seconds", 8)),
+        redis=web_redis,
+        user_set_result_count="result_count" in web_raw,
+        user_set_search_concurrent_requests="search_concurrent_requests" in web_raw,
+        user_set_loader_concurrent_requests="loader_concurrent_requests" in web_raw,
+        user_set_request_timeout_seconds="request_timeout_seconds" in web_raw,
+    )
 
     return StackConfig(
         name=str(project.get("name", "localai")),
@@ -154,4 +203,5 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
         health=health,
         tuning=tuning,
         rag=rag,
+        web=web,
     )

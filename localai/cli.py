@@ -182,6 +182,83 @@ def _qdrant_tuned_values(cfg: StackConfig, tuning: TuningResult, *, boost_enable
     return values, applied
 
 
+def _web_recommended(mem_gb: int, perf_cores: int) -> dict[str, int]:
+    perf_hint = perf_cores if perf_cores > 0 else 4
+    if mem_gb >= 128:
+        return {
+            "result_count": 8,
+            "search_concurrent_requests": min(16, perf_hint * 2),
+            "loader_concurrent_requests": min(10, perf_hint),
+            "request_timeout_seconds": 12,
+            "redis_maxmemory_mb": 2048,
+        }
+    if mem_gb >= 64:
+        return {
+            "result_count": 6,
+            "search_concurrent_requests": min(12, perf_hint * 2),
+            "loader_concurrent_requests": min(8, perf_hint),
+            "request_timeout_seconds": 10,
+            "redis_maxmemory_mb": 1024,
+        }
+    if mem_gb >= 32:
+        return {
+            "result_count": 5,
+            "search_concurrent_requests": min(8, perf_hint + 2),
+            "loader_concurrent_requests": min(6, perf_hint),
+            "request_timeout_seconds": 8,
+            "redis_maxmemory_mb": 512,
+        }
+    return {
+        "result_count": 4,
+        "search_concurrent_requests": min(4, max(2, perf_hint)),
+        "loader_concurrent_requests": 2,
+        "request_timeout_seconds": 6,
+        "redis_maxmemory_mb": 256,
+    }
+
+
+def _web_boosted(base: dict[str, int], mem_gb: int, perf_cores: int) -> dict[str, int]:
+    perf_hint = perf_cores if perf_cores > 0 else 4
+    boosted = dict(base)
+    boosted["result_count"] = min(10, base["result_count"] + 2)
+    boosted["search_concurrent_requests"] = min(20, max(base["search_concurrent_requests"] + 2, perf_hint * 2))
+    boosted["loader_concurrent_requests"] = min(12, base["loader_concurrent_requests"] + 2)
+    boosted["request_timeout_seconds"] = min(20, base["request_timeout_seconds"] + 2)
+    redis_cap = 3072 if mem_gb >= 64 else 1536
+    boosted["redis_maxmemory_mb"] = min(redis_cap, max(base["redis_maxmemory_mb"] * 2, base["redis_maxmemory_mb"] + 256))
+    return boosted
+
+
+def _web_tuned_values(cfg: StackConfig, tuning: TuningResult, *, boost_enabled: bool) -> tuple[dict[str, int], dict[str, str]]:
+    web = cfg.web
+    redis = cfg.web.redis
+    base = _web_recommended(tuning.specs.mem_gb, tuning.specs.perf_cores)
+    target = _web_boosted(base, tuning.specs.mem_gb, tuning.specs.perf_cores) if boost_enabled else base
+
+    values = {
+        "result_count": web.result_count,
+        "search_concurrent_requests": web.search_concurrent_requests,
+        "loader_concurrent_requests": web.loader_concurrent_requests,
+        "request_timeout_seconds": web.request_timeout_seconds,
+        "redis_maxmemory_mb": redis.maxmemory_mb,
+    }
+    user_set = {
+        "result_count": web.user_set_result_count,
+        "search_concurrent_requests": web.user_set_search_concurrent_requests,
+        "loader_concurrent_requests": web.user_set_loader_concurrent_requests,
+        "request_timeout_seconds": web.user_set_request_timeout_seconds,
+        "redis_maxmemory_mb": redis.user_set_maxmemory_mb,
+    }
+    applied: dict[str, str] = {}
+    for k, v in target.items():
+        if cfg.tuning.respect_user_values and user_set[k]:
+            continue
+        if values[k] != v:
+            values[k] = v
+            applied[f"web.{k}"] = str(v)
+    return values, applied
+
+
 def _rag_preset_values(preset: str) -> dict[str, str]:
     mode = preset if preset in {"fast", "deep"} else "fast"
     if mode == "deep":
@@ -233,12 +310,35 @@ def _effective_qdrant_url(cfg: StackConfig) -> str:
     return cfg.health.qdrant_url
 
 
+def _effective_searxng_url(cfg: StackConfig) -> str:
+    runtime_env = _read_runtime_env(Path(cfg.root))
+    port = runtime_env.get("LOCALAI_SEARXNG_PORT")
+    if port and port.isdigit():
+        return f"http://127.0.0.1:{port}/healthz"
+    return "http://127.0.0.1:8082/healthz"
+
+
 def _effective_services(cfg: StackConfig) -> list[str]:
     runtime_env = _read_runtime_env(Path(cfg.root))
     raw = runtime_env.get("LOCALAI_DOCKER_SERVICES", "")
     if raw:
         return [s.strip() for s in raw.split(",") if s.strip()]
     return list(cfg.docker.services)
+
+
+def _redis_ping(cfg: StackConfig) -> tuple[bool, str]:
+    cmd = ["docker", "compose"]
+    env_file = Path(cfg.root) / ".localai.env"
+    if env_file.exists():
+        cmd.extend(["--env-file", str(env_file)])
+    cmd.extend(["-f", str(cfg.docker.compose_file), "exec", "-T", "redis", "redis-cli", "ping"])
+    res = run(cmd, cwd=str(cfg.root), check=False)
+    out = (res.stdout or res.stderr).strip()
+    if res.code == 0 and "PONG" in out:
+        return True, "PONG"
+    if not out:
+        out = f"exit {res.code}"
+    return False, out
 
 
 def _apply_boost_profile(cfg: StackConfig, tuning: TuningResult) -> dict[str, str]:
@@ -311,8 +411,10 @@ def _write_runtime_env(
     model_admin_port = "3010"
     qdrant_port = "6333"
     qdrant_values, _ = _qdrant_tuned_values(cfg, tuning, boost_enabled=boost_enabled)
+    web_values, _ = _web_tuned_values(cfg, tuning, boost_enabled=boost_enabled)
     rag_values = _rag_preset_values(rag_preset)
     active_services = docker_services or cfg.docker.services
+    redis_url = "redis://redis:6379/0" if cfg.web.enabled else ""
     lines = [
         "# Generated by localai CLI.",
         f"LOCALAI_BIND_IP={bind_ip}",
@@ -341,6 +443,17 @@ def _write_runtime_env(
         f"LOCALAI_RAG_HYBRID_SEARCH={rag_values['hybrid_search']}",
         f"LOCALAI_RAG_EMBED_BATCH_SIZE={rag_values['embedding_batch_size']}",
         f"LOCALAI_RAG_EMBED_CONCURRENT_REQUESTS={rag_values['embedding_concurrent_requests']}",
+        f"LOCALAI_WEB_ENABLED={'true' if cfg.web.enabled else 'false'}",
+        f"LOCALAI_WEB_SEARCH_ENGINE={cfg.web.engine}",
+        f"LOCALAI_SEARXNG_QUERY_URL={cfg.web.searxng_query_url}",
+        f"LOCALAI_WEB_SEARCH_RESULT_COUNT={web_values['result_count']}",
+        f"LOCALAI_WEB_SEARCH_CONCURRENT_REQUESTS={web_values['search_concurrent_requests']}",
+        f"LOCALAI_WEB_LOADER_CONCURRENT_REQUESTS={web_values['loader_concurrent_requests']}",
+        f"LOCALAI_WEB_SEARCH_TIMEOUT_SECONDS={web_values['request_timeout_seconds']}",
+        "LOCALAI_SEARXNG_PORT=8082",
+        f"LOCALAI_WEB_REDIS_MAXMEMORY_MB={web_values['redis_maxmemory_mb']}",
+        f"LOCALAI_WEB_REDIS_MAXMEMORY_POLICY={cfg.web.redis.maxmemory_policy}",
+        f"LOCALAI_SEARXNG_REDIS_URL={redis_url}",
         f"LOCALAI_QDRANT_ENABLED={'1' if cfg.rag.qdrant.enabled else '0'}",
         f"LOCALAI_QDRANT_DEFAULT_SEGMENT_NUMBER={qdrant_values['default_segment_number']}",
         f"LOCALAI_QDRANT_MEMMAP_THRESHOLD_KB={qdrant_values['memmap_threshold_kb']}",
@@ -354,6 +467,8 @@ def _write_runtime_env(
 
 def _cmd_up(args: argparse.Namespace) -> int:
     cfg, tuning = _load_cfg_with_tuning(args.stack)
+    if args.web_search:
+        cfg.web.enabled = True
     expose_active = args.expose is not None
     expose_port = int(args.expose) if expose_active else 80
     if expose_active and not (1 <= expose_port <= 65535):
@@ -361,16 +476,30 @@ def _cmd_up(args: argparse.Namespace) -> int:
     rag_preset = (args.rag_preset or cfg.rag.preset).strip().lower()
     if rag_preset not in {"fast", "deep"}:
         raise RuntimeError("--rag-preset must be one of: fast, deep")
+    if cfg.web.enabled and cfg.web.engine != "searxng":
+        raise RuntimeError("web.engine must be 'searxng' when web search is enabled")
+    if cfg.web.enabled and "<query>" not in cfg.web.searxng_query_url:
+        raise RuntimeError("web.searxng_query_url must contain the <query> placeholder")
     boost_active = bool(args.boost and cfg.ollama.enabled)
     if args.boost and cfg.ollama.enabled:
         boost_applied = _apply_boost_profile(cfg, tuning)
         if boost_applied:
             print(f"boost profile applied: {json.dumps(boost_applied)}")
+    _, web_applied = _web_tuned_values(cfg, tuning, boost_enabled=boost_active)
+    if cfg.web.enabled and web_applied:
+        print(f"web tuning applied: {json.dumps(web_applied)}")
     _, qdrant_applied = _qdrant_tuned_values(cfg, tuning, boost_enabled=boost_active)
     if cfg.rag.qdrant.enabled and qdrant_applied:
         print(f"qdrant tuning applied: {json.dumps(qdrant_applied)}")
     if args.no_webui:
         cfg.docker.services = ["model-admin", "qdrant"]
+    elif cfg.web.enabled:
+        if "searxng" not in cfg.docker.services:
+            cfg.docker.services.append("searxng")
+        if "redis" not in cfg.docker.services:
+            cfg.docker.services.append("redis")
+    else:
+        cfg.docker.services = [s for s in cfg.docker.services if s not in {"searxng", "redis"}]
     if not cfg.rag.qdrant.enabled:
         cfg.docker.services = [s for s in cfg.docker.services if s != "qdrant"]
     _write_runtime_env(
@@ -449,6 +578,16 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         checks.append(("openwebui http", ui_ok, ui_msg[:120]))
     else:
         checks.append(("openwebui http", True, "skipped (service not enabled)"))
+    if "searxng" in active_services:
+        searxng_ok, searxng_msg = http_ok(_effective_searxng_url(cfg))
+        checks.append(("searxng http", searxng_ok, searxng_msg[:120]))
+    elif cfg.web.enabled:
+        checks.append(("searxng http", True, "skipped (service not enabled)"))
+    if "redis" in active_services:
+        redis_ok, redis_msg = _redis_ping(cfg)
+        checks.append(("redis ping", redis_ok, redis_msg[:120]))
+    elif cfg.web.enabled:
+        checks.append(("redis ping", True, "skipped (service not enabled)"))
     if cfg.rag.qdrant.enabled and "qdrant" in active_services:
         qdrant_ok, qdrant_msg = http_ok(_effective_qdrant_url(cfg))
         checks.append(("qdrant http", qdrant_ok, qdrant_msg[:120]))
@@ -529,6 +668,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="no_webui",
         help=argparse.SUPPRESS,
+    )
+    sub_up.add_argument(
+        "--web-search",
+        action="store_true",
+        help="Enable web search for this run (starts SearxNG + Redis with OpenWebUI).",
     )
     sub_up.add_argument(
         "--boost",

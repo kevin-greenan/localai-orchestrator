@@ -41,6 +41,22 @@ enabled = true
 # hnsw_m = 24
 # hnsw_ef_construct = 100
 
+[web]
+enabled = false
+engine = "searxng"
+searxng_query_url = "http://searxng:8080/search?q=<query>&format=json"
+
+# Optional manual overrides (if set, they win when tuning.respect_user_values = true):
+# result_count = 5
+# search_concurrent_requests = 6
+# loader_concurrent_requests = 3
+# request_timeout_seconds = 8
+
+[web.redis]
+# Optional manual overrides (if set, they win when tuning.respect_user_values = true):
+# maxmemory_mb = 512
+# maxmemory_policy = "allkeys-lru"
+
 [health]
 openwebui_url = "http://127.0.0.1:3000/health"
 qdrant_url = "http://127.0.0.1:6333/healthz"
