@@ -20,6 +20,13 @@ services:
       - ENABLE_RAG_HYBRID_SEARCH=${LOCALAI_RAG_HYBRID_SEARCH:-false}
       - RAG_EMBEDDING_BATCH_SIZE=${LOCALAI_RAG_EMBED_BATCH_SIZE:-1}
       - RAG_EMBEDDING_CONCURRENT_REQUESTS=${LOCALAI_RAG_EMBED_CONCURRENT_REQUESTS:-1}
+      - ENABLE_WEB_SEARCH=${LOCALAI_WEB_ENABLED:-false}
+      - WEB_SEARCH_ENGINE=${LOCALAI_WEB_SEARCH_ENGINE:-searxng}
+      - SEARXNG_QUERY_URL=${LOCALAI_SEARXNG_QUERY_URL:-http://searxng:8080/search?q=<query>&format=json}
+      - WEB_SEARCH_RESULT_COUNT=${LOCALAI_WEB_SEARCH_RESULT_COUNT:-3}
+      - WEB_SEARCH_CONCURRENT_REQUESTS=${LOCALAI_WEB_SEARCH_CONCURRENT_REQUESTS:-4}
+      - WEB_LOADER_CONCURRENT_REQUESTS=${LOCALAI_WEB_LOADER_CONCURRENT_REQUESTS:-2}
+      - WEB_SEARCH_TIMEOUT=${LOCALAI_WEB_SEARCH_TIMEOUT_SECONDS:-8}
     volumes:
       - openwebui-data:/app/backend/data
     restart: unless-stopped
@@ -63,6 +70,32 @@ services:
       - QDRANT__STORAGE__HNSW_INDEX__EF_CONSTRUCT=${LOCALAI_QDRANT_HNSW_EF_CONSTRUCT:-100}
     volumes:
       - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+  searxng:
+    image: searxng/searxng:latest
+    container_name: localai-searxng
+    ports:
+      - "${LOCALAI_BIND_IP:-127.0.0.1}:${LOCALAI_SEARXNG_PORT:-8082}:8080"
+    environment:
+      - INSTANCE_NAME=localai-searxng
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_SECRET=${LOCALAI_SEARXNG_SECRET:-}
+      - UWSGI_WORKERS=${LOCALAI_SEARXNG_WORKERS:-2}
+      - UWSGI_THREADS=${LOCALAI_SEARXNG_THREADS:-2}
+      - SEARXNG_REDIS_URL=${LOCALAI_SEARXNG_REDIS_URL:-}
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    container_name: localai-redis
+    command:
+      - /bin/sh
+      - -lc
+      - >
+        exec redis-server --save "" --appendonly no
+        --maxmemory "${LOCALAI_WEB_REDIS_MAXMEMORY_MB:-256}mb"
+        --maxmemory-policy "${LOCALAI_WEB_REDIS_MAXMEMORY_POLICY:-allkeys-lru}"
     restart: unless-stopped
 
 volumes:

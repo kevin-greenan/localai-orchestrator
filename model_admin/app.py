@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import os
 import re
 import secrets
+from urllib.parse import quote_plus, urlparse
 from time import monotonic, perf_counter
 from typing import Any, Literal
 
@@ -25,6 +27,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 LOCALAI_HOST_RAM_GB = max(8, _env_int("LOCALAI_HOST_RAM_GB", 32))
 LOCALAI_CPU_LOGICAL = max(0, _env_int("LOCALAI_CPU_LOGICAL", 0))
 LOCALAI_CPU_PHYSICAL = max(0, _env_int("LOCALAI_CPU_PHYSICAL", 0))
@@ -41,6 +50,10 @@ LOCALAI_OLLAMA_MAX_QUEUE = max(1, _env_int("LOCALAI_OLLAMA_MAX_QUEUE", 160))
 LOCALAI_BOOST_ACTIVE = os.getenv("LOCALAI_BOOST_ACTIVE", "0") == "1"
 LOCALAI_RAG_PRESET = os.getenv("LOCALAI_RAG_PRESET", "fast").strip().lower() or "fast"
 LOCALAI_QDRANT_ENABLED = os.getenv("LOCALAI_QDRANT_ENABLED", "1") == "1"
+LOCALAI_WEB_ENABLED = _env_bool("LOCALAI_WEB_ENABLED", False)
+LOCALAI_SEARXNG_QUERY_URL = os.getenv("LOCALAI_SEARXNG_QUERY_URL", "http://searxng:8080/search?q=<query>&format=json").strip()
+LOCALAI_WEB_REDIS_MAXMEMORY_MB = max(1, _env_int("LOCALAI_WEB_REDIS_MAXMEMORY_MB", 256))
+LOCALAI_SEARXNG_REDIS_URL = os.getenv("LOCALAI_SEARXNG_REDIS_URL", "redis://redis:6379/0").strip()
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333").rstrip("/")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 MODEL_ADMIN_USERNAME = os.getenv("MODEL_ADMIN_USERNAME", "").strip()
@@ -77,6 +90,14 @@ ACTION_STATE: dict[str, Any] = {
 QDRANT_METRICS_CACHE: dict[str, Any] = {
     "expires_at": 0.0,
     "payload": None,
+}
+WEB_METRICS_CACHE: dict[str, Any] = {
+    "expires_at": 0.0,
+    "payload": None,
+}
+WEB_METRICS_STATE: dict[str, int] = {
+    "search_ok": 0,
+    "search_err": 0,
 }
 
 
@@ -269,6 +290,169 @@ async def _qdrant_metrics() -> dict[str, Any]:
     return payload
 
 
+def _build_searxng_probe_url(query: str = "latest ai news") -> str:
+    template = LOCALAI_SEARXNG_QUERY_URL or "http://searxng:8080/search?q=<query>&format=json"
+    encoded = quote_plus(query)
+    if "<query>" in template:
+        url = template.replace("<query>", encoded)
+    else:
+        sep = "&" if "?" in template else "?"
+        url = f"{template}{sep}q={encoded}"
+    if "format=" not in url:
+        join = "&" if "?" in url else "?"
+        url = f"{url}{join}format=json"
+    return url
+
+
+def _redis_parse_info(raw: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or ":" not in s:
+            continue
+        k, v = s.split(":", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+async def _redis_send_command(reader, writer, *parts: str) -> str:  # type: ignore[no-untyped-def]
+    payload = f"*{len(parts)}\r\n"
+    for part in parts:
+        b = part.encode("utf-8")
+        payload += f"${len(b)}\r\n{part}\r\n"
+    writer.write(payload.encode("utf-8"))
+    await writer.drain()
+
+    lead = await reader.readexactly(1)
+    if lead == b"+":
+        return (await reader.readline()).decode("utf-8", errors="ignore").strip()
+    if lead == b":":
+        return (await reader.readline()).decode("utf-8", errors="ignore").strip()
+    if lead == b"$":
+        line = await reader.readline()
+        n = int(line.decode("utf-8", errors="ignore").strip() or "-1")
+        if n < 0:
+            return ""
+        data = await reader.readexactly(n)
+        await reader.readexactly(2)  # trailing CRLF
+        return data.decode("utf-8", errors="ignore")
+    if lead == b"-":
+        msg = (await reader.readline()).decode("utf-8", errors="ignore").strip()
+        raise RuntimeError(msg)
+    raise RuntimeError("unsupported redis reply type")
+
+
+def _empty_web_metrics(*, error: str = "") -> dict[str, Any]:
+    return {
+        "enabled": LOCALAI_WEB_ENABLED,
+        "searxng_up": False,
+        "searxng_latency_ms": -1,
+        "last_results_count": -1,
+        "search_ok": WEB_METRICS_STATE["search_ok"],
+        "search_err": WEB_METRICS_STATE["search_err"],
+        "search_error_rate": 0.0,
+        "redis_up": False,
+        "redis_latency_ms": -1,
+        "redis_used_memory_mb": -1.0,
+        "redis_maxmemory_mb": float(LOCALAI_WEB_REDIS_MAXMEMORY_MB),
+        "redis_memory_pct": -1.0,
+        "redis_connected_clients": -1,
+        "redis_hit_ratio": -1.0,
+        "error": error,
+    }
+
+
+async def _web_metrics() -> dict[str, Any]:
+    if not LOCALAI_WEB_ENABLED:
+        return _empty_web_metrics(error="web search disabled")
+
+    now = monotonic()
+    cached = WEB_METRICS_CACHE.get("payload")
+    if cached and now < float(WEB_METRICS_CACHE.get("expires_at", 0.0)):
+        return cached
+
+    payload = _empty_web_metrics()
+    errors: list[str] = []
+
+    # SearxNG probe.
+    searx_url = _build_searxng_probe_url()
+    try:
+        start = perf_counter()
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(searx_url)
+            resp.raise_for_status()
+            latency_ms = int((perf_counter() - start) * 1000)
+            body = resp.json() if resp.content else {}
+        results = body.get("results", []) if isinstance(body, dict) else []
+        payload["searxng_up"] = True
+        payload["searxng_latency_ms"] = latency_ms
+        payload["last_results_count"] = len(results) if isinstance(results, list) else 0
+        WEB_METRICS_STATE["search_ok"] += 1
+    except Exception as e:  # noqa: BLE001
+        WEB_METRICS_STATE["search_err"] += 1
+        errors.append(f"searxng: {e}")
+
+    # Redis probe.
+    try:
+        parsed = urlparse(LOCALAI_SEARXNG_REDIS_URL or "redis://redis:6379/0")
+        host = parsed.hostname or "redis"
+        port = parsed.port or 6379
+        db = 0
+        if parsed.path and parsed.path != "/":
+            try:
+                db = int(parsed.path.strip("/"))
+            except ValueError:
+                db = 0
+        password = parsed.password or ""
+
+        start = perf_counter()
+        reader, writer = await asyncio.open_connection(host, port)
+        try:
+            if password:
+                await _redis_send_command(reader, writer, "AUTH", password)
+            if db > 0:
+                await _redis_send_command(reader, writer, "SELECT", str(db))
+            pong = await _redis_send_command(reader, writer, "PING")
+            info_memory = await _redis_send_command(reader, writer, "INFO", "memory")
+            info_stats = await _redis_send_command(reader, writer, "INFO", "stats")
+            info_clients = await _redis_send_command(reader, writer, "INFO", "clients")
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+        payload["redis_latency_ms"] = int((perf_counter() - start) * 1000)
+        payload["redis_up"] = str(pong).upper() == "PONG"
+
+        mem = _redis_parse_info(info_memory)
+        stats = _redis_parse_info(info_stats)
+        clients = _redis_parse_info(info_clients)
+        used_bytes = int(mem.get("used_memory", "0") or 0)
+        maxmemory_bytes = int(mem.get("maxmemory", "0") or 0)
+        hits = int(stats.get("keyspace_hits", "0") or 0)
+        misses = int(stats.get("keyspace_misses", "0") or 0)
+        total = hits + misses
+
+        used_mb = used_bytes / (1024 * 1024)
+        max_mb = maxmemory_bytes / (1024 * 1024) if maxmemory_bytes > 0 else float(LOCALAI_WEB_REDIS_MAXMEMORY_MB)
+        payload["redis_used_memory_mb"] = round(used_mb, 2)
+        payload["redis_maxmemory_mb"] = round(max_mb, 2)
+        payload["redis_memory_pct"] = round((used_mb / max_mb) * 100.0, 1) if max_mb > 0 else -1.0
+        payload["redis_connected_clients"] = int(clients.get("connected_clients", "0") or 0)
+        payload["redis_hit_ratio"] = round((hits / total) * 100.0, 1) if total > 0 else -1.0
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"redis: {e}")
+
+    payload["search_ok"] = WEB_METRICS_STATE["search_ok"]
+    payload["search_err"] = WEB_METRICS_STATE["search_err"]
+    total_search = payload["search_ok"] + payload["search_err"]
+    payload["search_error_rate"] = round((payload["search_err"] / total_search) * 100.0, 1) if total_search > 0 else 0.0
+    payload["error"] = "; ".join(errors)
+
+    WEB_METRICS_CACHE["payload"] = payload
+    WEB_METRICS_CACHE["expires_at"] = now + 5.0
+    return payload
+
+
 async def _ollama_stream_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     last: dict[str, Any] = {}
     raw_lines: list[str] = []
@@ -450,6 +634,7 @@ async def catalog(q: str = Query("", max_length=80), limit: int = Query(60, ge=5
 @app.get("/api/metrics")
 async def metrics() -> dict[str, Any]:
     qdrant = await _qdrant_metrics()
+    web = await _web_metrics()
     tags_latency_start = perf_counter()
     ollama_up = True
 
@@ -485,6 +670,7 @@ async def metrics() -> dict[str, Any]:
             "boost_active": LOCALAI_BOOST_ACTIVE,
             "rag_preset": LOCALAI_RAG_PRESET,
             "qdrant": qdrant,
+            "web": web,
             "error": str(e),
         }
 
@@ -522,6 +708,7 @@ async def metrics() -> dict[str, Any]:
         "boost_active": LOCALAI_BOOST_ACTIVE,
         "rag_preset": LOCALAI_RAG_PRESET,
         "qdrant": qdrant,
+        "web": web,
     }
 
 
@@ -796,6 +983,14 @@ async def index() -> str:
           <div class=\"hwitem\"><b>Collections:</b> <span id=\"rag-collections\">-</span></div>
           <div class=\"hwitem\"><b>Vectors:</b> <span id=\"rag-vectors\">-</span></div>
           <div class=\"hwitem\"><b>Qdrant Latency:</b> <span id=\"rag-latency\">-</span></div>
+        </div>
+        <div class=\"ragbar\">
+          <div class=\"hwitem\"><b>Web Search:</b> <span id=\"web-enabled\">-</span></div>
+          <div class=\"hwitem\"><b>SearxNG:</b> <span id=\"web-searxng\">-</span></div>
+          <div class=\"hwitem\"><b>SearxNG Latency:</b> <span id=\"web-latency\">-</span></div>
+          <div class=\"hwitem\"><b>Last Results:</b> <span id=\"web-results\">-</span></div>
+          <div class=\"hwitem\"><b>Search Errors:</b> <span id=\"web-errors\">-</span></div>
+          <div class=\"hwitem\"><b>Redis:</b> <span id=\"web-redis\">-</span></div>
         </div>
 
         <div class=\"grid\">
@@ -1102,6 +1297,20 @@ async def index() -> str:
         setText('rag-collections', qEnabled ? String(q.collections ?? '-') : '-');
         setText('rag-vectors', qEnabled ? `${q.indexed_vectors_total ?? 0} indexed / ${q.points_total ?? 0} total` : '-');
         setText('rag-latency', qEnabled ? (q.latency_ms >= 0 ? `${q.latency_ms} ms` : '-') : '-');
+        const w = m.web || {};
+        const webEnabled = w.enabled === true;
+        setText('web-enabled', webEnabled ? 'enabled' : 'disabled');
+        setText('web-searxng', webEnabled ? (w.searxng_up ? 'online' : 'unavailable') : '-');
+        setText('web-latency', webEnabled ? (w.searxng_latency_ms >= 0 ? `${w.searxng_latency_ms} ms` : '-') : '-');
+        setText('web-results', webEnabled ? (w.last_results_count >= 0 ? String(w.last_results_count) : '-') : '-');
+        setText(
+          'web-errors',
+          webEnabled ? `${w.search_error_rate ?? 0}% (${w.search_err ?? 0}/${(w.search_ok ?? 0) + (w.search_err ?? 0)})` : '-'
+        );
+        const redisMem = (w.redis_memory_pct >= 0 && w.redis_used_memory_mb >= 0)
+          ? `${w.redis_memory_pct}% (${w.redis_used_memory_mb}MB/${w.redis_maxmemory_mb}MB)`
+          : '-';
+        setText('web-redis', webEnabled ? ((w.redis_up ? 'online' : 'unavailable') + ` · ${redisMem}`) : '-');
 
         pushMetric('models', m.models_total ?? 0);
         pushMetric('store', m.models_store_bytes ?? 0);
