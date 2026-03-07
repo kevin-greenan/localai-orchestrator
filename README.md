@@ -19,6 +19,10 @@ macOS-first orchestration for Apple Silicon: run Ollama natively (Metal path) an
 - Auto-tunes runtime defaults from detected host hardware
 - Provides one CLI for lifecycle, checks, model sync, and warmup
 
+## Screenshot
+
+![LocalAI Model Admin dashboard](docs/images/admin_panel.png)
+
 ## Why This Architecture
 
 Docker on macOS does not give Linux containers native Apple Metal acceleration. This project keeps Ollama on the macOS host for performance, while using Compose for UI and supporting services.

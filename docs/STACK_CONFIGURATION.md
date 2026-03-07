@@ -2,6 +2,35 @@
 
 Main config file: `stack.toml`
 
+## Architecture Overview
+
+```mermaid
+flowchart LR
+  cli["localai CLI"] -->|"localai up/down/status"| launchd["launchd service"]
+  cli -->|"docker compose"| compose["Docker Compose stack"]
+  cli -->|"writes runtime env"| env[".localai.env"]
+
+  launchd --> ollama["Ollama (native host)"]
+
+  compose --> openwebui["OpenWebUI container"]
+  compose --> admin["Model Admin container"]
+  compose --> qdrant["Qdrant container"]
+  compose --> searxng["SearxNG container (optional)"]
+  compose --> redis["Redis container (optional)"]
+
+  env --> openwebui
+  env --> admin
+  env --> qdrant
+  env --> searxng
+  env --> redis
+
+  openwebui -->|"LLM + embeddings"| ollama
+  admin -->|"model ops + status"| ollama
+  openwebui -->|"vector retrieval"| qdrant
+  openwebui -->|"web search requests"| searxng
+  searxng --> redis
+```
+
 ## RAG Storage (Qdrant)
 
 Qdrant is included as a default service for local RAG/vector storage.
