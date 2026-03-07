@@ -2,6 +2,12 @@
 
 `model_admin/` is a FastAPI service that provides a browser UI for Ollama model management and stack observability.
 
+## UI Pages
+
+- `/runtime`: hardware + runtime telemetry and live utilization cards
+- `/models`: model actions, local inventory, catalog browse, and debug console
+- `/tests`: smoke checks and benchmark runs (JSON results for tuning workflows)
+
 ## What It Provides
 
 - Pull, update, and delete model actions
@@ -9,6 +15,7 @@
 - RAG health strip (preset, qdrant status, collections, indexed vectors, qdrant latency)
 - Searchable catalog with one-click pull
 - Class and fit filters (`chat`, `reasoning`, `code`, `embed`, `vision`)
+- Built-in smoke test runner and inference benchmark runner
 
 ## Operational Notes
 
