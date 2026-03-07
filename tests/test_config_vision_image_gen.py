@@ -38,6 +38,9 @@ concurrency = 2
 queue_timeout_seconds = 450
 artifact_store = "minio"
 backend_url = "http://image-gen:8090"
+a1111_url = "http://host.docker.internal:7860"
+openwebui_model = "localai-imagegen"
+openwebui_image_size = "1024x1024"
 """
         with tempfile.TemporaryDirectory() as td:
             stack_path = Path(td) / "stack.toml"
@@ -55,6 +58,9 @@ backend_url = "http://image-gen:8090"
         self.assertEqual(cfg.image_gen.queue_timeout_seconds, 450)
         self.assertEqual(cfg.image_gen.artifact_store, "minio")
         self.assertEqual(cfg.image_gen.backend_url, "http://image-gen:8090")
+        self.assertEqual(cfg.image_gen.a1111_url, "http://host.docker.internal:7860")
+        self.assertEqual(cfg.image_gen.openwebui_model, "localai-imagegen")
+        self.assertEqual(cfg.image_gen.openwebui_image_size, "1024x1024")
 
 
 if __name__ == "__main__":

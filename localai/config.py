@@ -103,6 +103,9 @@ class ImageGenConfig:
     queue_timeout_seconds: int
     artifact_store: str
     backend_url: str
+    a1111_url: str
+    openwebui_model: str
+    openwebui_image_size: str
 
 
 @dataclass(slots=True)
@@ -229,6 +232,9 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
         queue_timeout_seconds=int(image_gen_raw.get("queue_timeout_seconds", 300)),
         artifact_store=str(image_gen_raw.get("artifact_store", "minio")).strip(),
         backend_url=str(image_gen_raw.get("backend_url", "http://image-gen:8090")).strip(),
+        a1111_url=str(image_gen_raw.get("a1111_url", "")).strip(),
+        openwebui_model=str(image_gen_raw.get("openwebui_model", "localai-imagegen")).strip(),
+        openwebui_image_size=str(image_gen_raw.get("openwebui_image_size", "1024x1024")).strip(),
     )
 
     return StackConfig(

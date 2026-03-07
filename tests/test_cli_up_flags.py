@@ -132,6 +132,9 @@ class UpFlagTests(unittest.TestCase):
         cfg.image_gen.queue_timeout_seconds = 450
         cfg.image_gen.artifact_store = "minio"
         cfg.image_gen.backend_url = "http://image-gen:8090"
+        cfg.image_gen.a1111_url = "http://host.docker.internal:7860"
+        cfg.image_gen.openwebui_model = "localai-imagegen"
+        cfg.image_gen.openwebui_image_size = "1024x1024"
 
         with tempfile.TemporaryDirectory() as td:
             cfg.root = Path(td)
@@ -154,6 +157,12 @@ class UpFlagTests(unittest.TestCase):
             self.assertEqual(env["LOCALAI_IMAGE_GEN_QUEUE_TIMEOUT_SECONDS"], "450")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_ARTIFACT_STORE"], "minio")
             self.assertEqual(env["LOCALAI_IMAGE_GEN_BACKEND_URL"], "http://image-gen:8090")
+            self.assertEqual(env["LOCALAI_IMAGE_GEN_A1111_URL"], "http://host.docker.internal:7860")
+            self.assertEqual(env["LOCALAI_OPENWEBUI_ENABLE_IMAGE_GENERATION"], "True")
+            self.assertEqual(env["LOCALAI_OPENWEBUI_IMAGE_GENERATION_ENGINE"], "openai")
+            self.assertEqual(env["LOCALAI_OPENWEBUI_IMAGE_GENERATION_MODEL"], "localai-imagegen")
+            self.assertEqual(env["LOCALAI_OPENWEBUI_IMAGES_OPENAI_API_BASE_URL"], "http://image-gen:8090/v1")
+            self.assertEqual(env["LOCALAI_OPENWEBUI_IMAGE_SIZE"], "1024x1024")
             services = set(env["LOCALAI_DOCKER_SERVICES"].split(","))
             self.assertIn("image-gen", services)
             self.assertIn("minio", services)

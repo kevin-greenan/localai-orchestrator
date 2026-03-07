@@ -98,6 +98,29 @@ Behavior:
 - `localai up --no-webui` skips OpenWebUI and web-search add-ons.
 - OpenWebUI env wiring is auto-generated in `.localai.env`.
 
+## Image Generation Lane (`image-gen` + MinIO)
+
+Image generation is optional and disabled by default.
+
+Enable in `stack.toml`:
+
+```toml
+[image_gen]
+enabled = true
+provider = "mock" # or "automatic1111"
+artifact_store = "minio"
+backend_url = "http://image-gen:8090"
+a1111_url = "" # required when provider = "automatic1111"
+openwebui_model = "localai-imagegen"
+openwebui_image_size = "1024x1024"
+```
+
+Behavior:
+
+- When `[image_gen].enabled = true`, `localai up` includes `image-gen`, `minio`, and `image-redis`.
+- OpenWebUI is wired to call `image-gen` using OpenAI-compatible image APIs (`/v1/images/generations`).
+- Generated artifacts are persisted through the configured artifact store (MinIO by default).
+
 ## Key Sections in `stack.toml`
 
 - `[native.ollama]`: host/port, models, warmup defaults, optional manual runtime overrides

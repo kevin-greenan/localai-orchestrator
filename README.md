@@ -84,5 +84,5 @@ For full command/flag behavior, see `docs/CLI.md`.
 - `model_admin/`: FastAPI app for model management UI
 - `image_gen/`: FastAPI service lane for async image generation jobs
 - `docs/`: operational and feature documentation
-- `docker-compose.yml`: OpenWebUI + model-admin + qdrant services
+- `docker-compose.yml`: OpenWebUI + model-admin + qdrant (+ optional image-gen/web services)
 - `stack.toml`: user-tunable stack configuration

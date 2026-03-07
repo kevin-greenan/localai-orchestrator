@@ -65,11 +65,14 @@ benchmark_dataset = "tests/fixtures/vision/smoke.jsonl"
 
 [image_gen]
 enabled = false
-provider = "none"
+provider = "mock"
 concurrency = 1
 queue_timeout_seconds = 300
 artifact_store = "minio"
 backend_url = "http://image-gen:8090"
+a1111_url = ""
+openwebui_model = "localai-imagegen"
+openwebui_image_size = "1024x1024"
 
 [health]
 openwebui_url = "http://127.0.0.1:3000/health"
