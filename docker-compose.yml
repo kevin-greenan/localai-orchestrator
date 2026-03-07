@@ -23,6 +23,17 @@ services:
       - MODEL_ADMIN_USERNAME=${MODEL_ADMIN_USERNAME:-}
       - MODEL_ADMIN_PASSWORD=${MODEL_ADMIN_PASSWORD:-}
     restart: unless-stopped
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: localai-qdrant
+    ports:
+      - "${LOCALAI_BIND_IP:-127.0.0.1}:${LOCALAI_QDRANT_PORT:-6333}:6333"
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-}
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
 
 volumes:
   openwebui-data:
+  qdrant-data:

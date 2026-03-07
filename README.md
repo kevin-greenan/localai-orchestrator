@@ -5,7 +5,7 @@ macOS-first orchestration for Apple Silicon: run Ollama natively (Metal path) an
 ## What it does
 
 - Starts `ollama serve` as a macOS `launchd` service
-- Runs OpenWebUI + Model Admin via Docker Compose
+- Runs OpenWebUI + Model Admin + Qdrant via Docker Compose
 - Auto-tunes Ollama defaults from host hardware on startup
 - Provides one CLI for lifecycle, checks, model sync, and warmup
 - Exposes a Model Admin web UI with:
@@ -62,17 +62,21 @@ By default, Docker ports are bound to loopback only:
 
 - `127.0.0.1:3000` (OpenWebUI)
 - `127.0.0.1:3010` (Model Admin)
+- `127.0.0.1:6333` (Qdrant)
 
 If you run `localai up --expose` (or `localai up --expose <port>`), services bind to all interfaces:
 
 - `0.0.0.0:80` (OpenWebUI)
 - `0.0.0.0:3010` (Model Admin)
+- `0.0.0.0:6333` (Qdrant)
 
 Optional hardening config lives in `.env` (template: `.env.example`):
 
 - `LOCALAI_BIND_IP=127.0.0.1` (recommended)
+- `LOCALAI_QDRANT_PORT=6333`
 - `MODEL_ADMIN_USERNAME=...`
 - `MODEL_ADMIN_PASSWORD=...`
+- `QDRANT_API_KEY=...` (optional)
 
 If both Model Admin credentials are set, the Model Admin UI/API requires HTTP Basic Auth.
 
@@ -137,9 +141,25 @@ localai doctor
 - Default (`localai up`):
   - OpenWebUI: <http://127.0.0.1:3000>
   - Model Admin: <http://127.0.0.1:3010>
+  - Qdrant API: <http://127.0.0.1:6333>
 - Exposed mode (`localai up --expose [PORT]`):
   - OpenWebUI: `http://<host-ip>:<PORT>` (defaults to `80` when omitted)
   - Model Admin: `http://<host-ip>:3010`
+  - Qdrant API: `http://<host-ip>:6333`
+
+## RAG Storage (Qdrant)
+
+Qdrant is included as a default service for local RAG/vector storage.
+
+- Container: `localai-qdrant`
+- API port: `6333` (or `LOCALAI_QDRANT_PORT`)
+- Data persistence: Docker named volume `qdrant-data`
+- Optional auth: set `QDRANT_API_KEY` in `.env`
+
+Persistence note:
+
+- Qdrant collections/vectors persist across container rebuilds/restarts.
+- Data is removed only if you explicitly remove volumes (for example `docker compose down -v`).
 
 ## Configuration
 
@@ -216,6 +236,8 @@ Security note:
   - Confirm `ollama` is in `PATH` (`which ollama`)
 - OpenWebUI asks for admin setup repeatedly:
   - Do not remove volumes (`docker compose down -v` clears persisted data)
+- Qdrant collections missing after restart:
+  - Ensure you did not run `docker compose down -v` (removes `qdrant-data` volume)
 - Model Admin changes not reflected after code updates:
   - Rebuild only that service:
   - `docker compose up -d --build model-admin`
@@ -233,5 +255,5 @@ Security note:
 
 - `localai/`: Python CLI + orchestration logic
 - `model_admin/`: FastAPI app for model management UI
-- `docker-compose.yml`: OpenWebUI + model-admin services
+- `docker-compose.yml`: OpenWebUI + model-admin + qdrant services
 - `stack.toml`: user-tunable stack configuration
