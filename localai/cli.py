@@ -108,6 +108,101 @@ def _queue_cap_for_mem(mem_gb: int) -> int:
     return 256
 
 
+def _qdrant_recommended(mem_gb: int, perf_cores: int) -> dict[str, int]:
+    if mem_gb >= 128:
+        return {
+            "default_segment_number": max(4, min(8, perf_cores)),
+            "memmap_threshold_kb": 300000,
+            "indexing_threshold_kb": 200000,
+            "hnsw_m": 48,
+            "hnsw_ef_construct": 200,
+        }
+    if mem_gb >= 64:
+        return {
+            "default_segment_number": max(3, min(6, perf_cores)),
+            "memmap_threshold_kb": 200000,
+            "indexing_threshold_kb": 100000,
+            "hnsw_m": 32,
+            "hnsw_ef_construct": 128,
+        }
+    if mem_gb >= 32:
+        return {
+            "default_segment_number": max(2, min(4, perf_cores)),
+            "memmap_threshold_kb": 100000,
+            "indexing_threshold_kb": 50000,
+            "hnsw_m": 24,
+            "hnsw_ef_construct": 100,
+        }
+    return {
+        "default_segment_number": 1,
+        "memmap_threshold_kb": 50000,
+        "indexing_threshold_kb": 20000,
+        "hnsw_m": 16,
+        "hnsw_ef_construct": 64,
+    }
+
+
+def _qdrant_boosted(base: dict[str, int], mem_gb: int, perf_cores: int) -> dict[str, int]:
+    seg_cap = max(1, min(12, perf_cores if perf_cores > 0 else 4))
+    boosted = dict(base)
+    boosted["default_segment_number"] = min(seg_cap, base["default_segment_number"] + 1)
+    boosted["memmap_threshold_kb"] = min(600000 if mem_gb >= 64 else 300000, base["memmap_threshold_kb"] * 2)
+    boosted["indexing_threshold_kb"] = min(500000 if mem_gb >= 64 else 200000, base["indexing_threshold_kb"] * 2)
+    boosted["hnsw_m"] = min(64, base["hnsw_m"] + 8)
+    boosted["hnsw_ef_construct"] = min(256, base["hnsw_ef_construct"] + 64)
+    return boosted
+
+
+def _qdrant_tuned_values(cfg: StackConfig, tuning: TuningResult, *, boost_enabled: bool) -> tuple[dict[str, int], dict[str, str]]:
+    q = cfg.rag.qdrant
+    base = _qdrant_recommended(tuning.specs.mem_gb, tuning.specs.perf_cores)
+    target = _qdrant_boosted(base, tuning.specs.mem_gb, tuning.specs.perf_cores) if boost_enabled else base
+
+    values = {
+        "default_segment_number": q.default_segment_number,
+        "memmap_threshold_kb": q.memmap_threshold_kb,
+        "indexing_threshold_kb": q.indexing_threshold_kb,
+        "hnsw_m": q.hnsw_m,
+        "hnsw_ef_construct": q.hnsw_ef_construct,
+    }
+    user_set = {
+        "default_segment_number": q.user_set_default_segment_number,
+        "memmap_threshold_kb": q.user_set_memmap_threshold_kb,
+        "indexing_threshold_kb": q.user_set_indexing_threshold_kb,
+        "hnsw_m": q.user_set_hnsw_m,
+        "hnsw_ef_construct": q.user_set_hnsw_ef_construct,
+    }
+    applied: dict[str, str] = {}
+    for k, v in target.items():
+        if cfg.tuning.respect_user_values and user_set[k]:
+            continue
+        if values[k] != v:
+            values[k] = v
+            applied[f"qdrant.{k}"] = str(v)
+    return values, applied
+
+
+def _rag_preset_values(preset: str) -> dict[str, str]:
+    mode = preset if preset in {"fast", "deep"} else "fast"
+    if mode == "deep":
+        return {
+            "top_k": "5",
+            "chunk_size": "1200",
+            "chunk_overlap": "160",
+            "hybrid_search": "true",
+            "embedding_batch_size": "2",
+            "embedding_concurrent_requests": "2",
+        }
+    return {
+        "top_k": "2",
+        "chunk_size": "800",
+        "chunk_overlap": "100",
+        "hybrid_search": "false",
+        "embedding_batch_size": "1",
+        "embedding_concurrent_requests": "1",
+    }
+
+
 def _read_runtime_env(root: Path) -> dict[str, str]:
     env_path = root / ".localai.env"
     if not env_path.exists():
@@ -128,6 +223,22 @@ def _effective_openwebui_url(cfg: StackConfig) -> str:
     if port and port.isdigit():
         return f"http://127.0.0.1:{port}/health"
     return cfg.health.openwebui_url
+
+
+def _effective_qdrant_url(cfg: StackConfig) -> str:
+    runtime_env = _read_runtime_env(Path(cfg.root))
+    port = runtime_env.get("LOCALAI_QDRANT_PORT")
+    if port and port.isdigit():
+        return f"http://127.0.0.1:{port}/healthz"
+    return cfg.health.qdrant_url
+
+
+def _effective_services(cfg: StackConfig) -> list[str]:
+    runtime_env = _read_runtime_env(Path(cfg.root))
+    raw = runtime_env.get("LOCALAI_DOCKER_SERVICES", "")
+    if raw:
+        return [s.strip() for s in raw.split(",") if s.strip()]
+    return list(cfg.docker.services)
 
 
 def _apply_boost_profile(cfg: StackConfig, tuning: TuningResult) -> dict[str, str]:
@@ -186,9 +297,11 @@ def _write_runtime_env(
     cfg: StackConfig,
     tuning: TuningResult,
     *,
+    rag_preset: str,
     boost_enabled: bool = False,
     expose_enabled: bool = False,
     expose_port: int = 80,
+    docker_services: list[str] | None = None,
 ) -> None:
     env_path = Path(cfg.root) / ".localai.env"
     host_ram = tuning.specs.mem_gb if tuning and tuning.specs.mem_gb else 32
@@ -196,11 +309,16 @@ def _write_runtime_env(
     bind_ip = "0.0.0.0" if expose_enabled else "127.0.0.1"
     openwebui_port = str(expose_port if expose_enabled else 3000)
     model_admin_port = "3010"
+    qdrant_port = "6333"
+    qdrant_values, _ = _qdrant_tuned_values(cfg, tuning, boost_enabled=boost_enabled)
+    rag_values = _rag_preset_values(rag_preset)
+    active_services = docker_services or cfg.docker.services
     lines = [
         "# Generated by localai CLI.",
         f"LOCALAI_BIND_IP={bind_ip}",
         f"LOCALAI_OPENWEBUI_PORT={openwebui_port}",
         f"LOCALAI_MODEL_ADMIN_PORT={model_admin_port}",
+        f"LOCALAI_QDRANT_PORT={qdrant_port}",
         f"LOCALAI_HOST_RAM_GB={host_ram}",
         f"LOCALAI_CPU_LOGICAL={tuning.specs.logical_cpu}",
         f"LOCALAI_CPU_PHYSICAL={tuning.specs.physical_cpu}",
@@ -216,6 +334,20 @@ def _write_runtime_env(
         f"LOCALAI_OLLAMA_MAX_QUEUE={max_queue}",
         f"LOCALAI_BOOST_ACTIVE={'1' if boost_enabled else '0'}",
         f"LOCALAI_EXPOSE_ACTIVE={'1' if expose_enabled else '0'}",
+        f"LOCALAI_RAG_PRESET={rag_preset}",
+        f"LOCALAI_RAG_TOP_K={rag_values['top_k']}",
+        f"LOCALAI_RAG_CHUNK_SIZE={rag_values['chunk_size']}",
+        f"LOCALAI_RAG_CHUNK_OVERLAP={rag_values['chunk_overlap']}",
+        f"LOCALAI_RAG_HYBRID_SEARCH={rag_values['hybrid_search']}",
+        f"LOCALAI_RAG_EMBED_BATCH_SIZE={rag_values['embedding_batch_size']}",
+        f"LOCALAI_RAG_EMBED_CONCURRENT_REQUESTS={rag_values['embedding_concurrent_requests']}",
+        f"LOCALAI_QDRANT_ENABLED={'1' if cfg.rag.qdrant.enabled else '0'}",
+        f"LOCALAI_QDRANT_DEFAULT_SEGMENT_NUMBER={qdrant_values['default_segment_number']}",
+        f"LOCALAI_QDRANT_MEMMAP_THRESHOLD_KB={qdrant_values['memmap_threshold_kb']}",
+        f"LOCALAI_QDRANT_INDEXING_THRESHOLD_KB={qdrant_values['indexing_threshold_kb']}",
+        f"LOCALAI_QDRANT_HNSW_M={qdrant_values['hnsw_m']}",
+        f"LOCALAI_QDRANT_HNSW_EF_CONSTRUCT={qdrant_values['hnsw_ef_construct']}",
+        f"LOCALAI_DOCKER_SERVICES={','.join(active_services)}",
     ]
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -226,20 +358,31 @@ def _cmd_up(args: argparse.Namespace) -> int:
     expose_port = int(args.expose) if expose_active else 80
     if expose_active and not (1 <= expose_port <= 65535):
         raise RuntimeError("--expose port must be between 1 and 65535")
+    rag_preset = (args.rag_preset or cfg.rag.preset).strip().lower()
+    if rag_preset not in {"fast", "deep"}:
+        raise RuntimeError("--rag-preset must be one of: fast, deep")
     boost_active = bool(args.boost and cfg.ollama.enabled)
     if args.boost and cfg.ollama.enabled:
         boost_applied = _apply_boost_profile(cfg, tuning)
         if boost_applied:
             print(f"boost profile applied: {json.dumps(boost_applied)}")
+    _, qdrant_applied = _qdrant_tuned_values(cfg, tuning, boost_enabled=boost_active)
+    if cfg.rag.qdrant.enabled and qdrant_applied:
+        print(f"qdrant tuning applied: {json.dumps(qdrant_applied)}")
+    if args.no_webui:
+        cfg.docker.services = ["model-admin", "qdrant"]
+    if not cfg.rag.qdrant.enabled:
+        cfg.docker.services = [s for s in cfg.docker.services if s != "qdrant"]
     _write_runtime_env(
         cfg,
         tuning,
+        rag_preset=rag_preset,
         boost_enabled=boost_active,
         expose_enabled=expose_active,
         expose_port=expose_port,
+        docker_services=cfg.docker.services,
     )
-    if args.admin_only:
-        cfg.docker.services = ["model-admin"]
+    print(f"rag preset: {rag_preset}")
     if cfg.ollama.enabled:
         if tuning.enabled and tuning.applied:
             print(f"autotune applied: {json.dumps(tuning.applied)}")
@@ -300,8 +443,17 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     ollama_ok, ollama_msg = http_ok(f"http://{cfg.ollama.host}:{cfg.ollama.port}/api/tags")
     checks.append(("ollama http", ollama_ok, ollama_msg[:120]))
 
-    ui_ok, ui_msg = http_ok(_effective_openwebui_url(cfg))
-    checks.append(("openwebui http", ui_ok, ui_msg[:120]))
+    active_services = set(_effective_services(cfg))
+    if "openwebui" in active_services:
+        ui_ok, ui_msg = http_ok(_effective_openwebui_url(cfg))
+        checks.append(("openwebui http", ui_ok, ui_msg[:120]))
+    else:
+        checks.append(("openwebui http", True, "skipped (service not enabled)"))
+    if cfg.rag.qdrant.enabled and "qdrant" in active_services:
+        qdrant_ok, qdrant_msg = http_ok(_effective_qdrant_url(cfg))
+        checks.append(("qdrant http", qdrant_ok, qdrant_msg[:120]))
+    elif cfg.rag.qdrant.enabled:
+        checks.append(("qdrant http", True, "skipped (service not enabled)"))
 
     failed = False
     for name, ok, msg in checks:
@@ -367,14 +519,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Expose services on all interfaces. Optional OpenWebUI port (default: 80).",
     )
     sub_up.add_argument(
+        "--no-webui",
+        action="store_true",
+        dest="no_webui",
+        help="Start Model Admin + Qdrant only (skip OpenWebUI).",
+    )
+    sub_up.add_argument(
         "--admin-only",
         action="store_true",
-        help="Start only the Model Admin service (skip OpenWebUI).",
+        dest="no_webui",
+        help=argparse.SUPPRESS,
     )
     sub_up.add_argument(
         "--boost",
         action="store_true",
         help="Apply a higher-utilization runtime profile (more parallelism/queue/keep-alive).",
+    )
+    sub_up.add_argument(
+        "--rag-preset",
+        choices=["fast", "deep"],
+        help="RAG retrieval profile for OpenWebUI defaults (fast=lower latency, deep=more context/quality).",
     )
     sub_up.set_defaults(func=_cmd_up)
 

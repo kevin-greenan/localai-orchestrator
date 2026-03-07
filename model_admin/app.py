@@ -5,7 +5,7 @@ import json
 import os
 import re
 import secrets
-from time import perf_counter
+from time import monotonic, perf_counter
 from typing import Any, Literal
 
 import httpx
@@ -39,6 +39,10 @@ LOCALAI_OLLAMA_MAX_LOADED_MODELS = max(1, _env_int("LOCALAI_OLLAMA_MAX_LOADED_MO
 LOCALAI_OLLAMA_KEEP_ALIVE = os.getenv("LOCALAI_OLLAMA_KEEP_ALIVE", "30m")
 LOCALAI_OLLAMA_MAX_QUEUE = max(1, _env_int("LOCALAI_OLLAMA_MAX_QUEUE", 160))
 LOCALAI_BOOST_ACTIVE = os.getenv("LOCALAI_BOOST_ACTIVE", "0") == "1"
+LOCALAI_RAG_PRESET = os.getenv("LOCALAI_RAG_PRESET", "fast").strip().lower() or "fast"
+LOCALAI_QDRANT_ENABLED = os.getenv("LOCALAI_QDRANT_ENABLED", "1") == "1"
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333").rstrip("/")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY", "").strip()
 MODEL_ADMIN_USERNAME = os.getenv("MODEL_ADMIN_USERNAME", "").strip()
 MODEL_ADMIN_PASSWORD = os.getenv("MODEL_ADMIN_PASSWORD", "")
 
@@ -68,6 +72,11 @@ ACTION_STATE: dict[str, Any] = {
     "last_model": "",
     "last_duration_ms": 0,
     "last_error": "",
+}
+
+QDRANT_METRICS_CACHE: dict[str, Any] = {
+    "expires_at": 0.0,
+    "payload": None,
 }
 
 
@@ -181,6 +190,83 @@ async def _ollama_get(path: str) -> dict[str, Any]:
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return resp.json()
+
+
+def _empty_qdrant_metrics(*, error: str = "") -> dict[str, Any]:
+    return {
+        "enabled": LOCALAI_QDRANT_ENABLED,
+        "up": False,
+        "latency_ms": -1,
+        "collections": 0,
+        "points_total": 0,
+        "indexed_vectors_total": 0,
+        "segments_total": 0,
+        "error": error,
+    }
+
+
+async def _qdrant_metrics() -> dict[str, Any]:
+    if not LOCALAI_QDRANT_ENABLED:
+        return {
+            "enabled": False,
+            "up": False,
+            "latency_ms": -1,
+            "collections": 0,
+            "points_total": 0,
+            "indexed_vectors_total": 0,
+            "segments_total": 0,
+            "error": "qdrant disabled",
+        }
+
+    now = monotonic()
+    cached = QDRANT_METRICS_CACHE.get("payload")
+    if cached and now < float(QDRANT_METRICS_CACHE.get("expires_at", 0.0)):
+        return cached
+
+    headers: dict[str, str] = {}
+    if QDRANT_API_KEY:
+        headers["api-key"] = QDRANT_API_KEY
+
+    start = perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            list_resp = await client.get(f"{QDRANT_URL}/collections", headers=headers)
+            list_resp.raise_for_status()
+            latency_ms = int((perf_counter() - start) * 1000)
+            list_data = list_resp.json() if list_resp.content else {}
+
+            collections_raw = ((list_data.get("result") or {}).get("collections") or []) if isinstance(list_data, dict) else []
+            names = [str(item.get("name", "")).strip() for item in collections_raw if isinstance(item, dict)]
+            names = [name for name in names if name]
+
+            points_total = 0
+            indexed_total = 0
+            segments_total = 0
+            for name in names:
+                detail = await client.get(f"{QDRANT_URL}/collections/{name}", headers=headers)
+                detail.raise_for_status()
+                detail_data = detail.json() if detail.content else {}
+                result = detail_data.get("result", {}) if isinstance(detail_data, dict) else {}
+                points_total += int(result.get("points_count", 0) or 0)
+                indexed_total += int(result.get("indexed_vectors_count", 0) or 0)
+                segments_total += int(result.get("segments_count", 0) or 0)
+
+        payload = {
+            "enabled": True,
+            "up": True,
+            "latency_ms": latency_ms,
+            "collections": len(names),
+            "points_total": points_total,
+            "indexed_vectors_total": indexed_total,
+            "segments_total": segments_total,
+            "error": "",
+        }
+    except Exception as e:  # noqa: BLE001
+        payload = _empty_qdrant_metrics(error=str(e))
+
+    QDRANT_METRICS_CACHE["payload"] = payload
+    QDRANT_METRICS_CACHE["expires_at"] = now + 5.0
+    return payload
 
 
 async def _ollama_stream_post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -363,6 +449,7 @@ async def catalog(q: str = Query("", max_length=80), limit: int = Query(60, ge=5
 
 @app.get("/api/metrics")
 async def metrics() -> dict[str, Any]:
+    qdrant = await _qdrant_metrics()
     tags_latency_start = perf_counter()
     ollama_up = True
 
@@ -396,6 +483,8 @@ async def metrics() -> dict[str, Any]:
             "keep_alive": LOCALAI_OLLAMA_KEEP_ALIVE,
             "max_queue": LOCALAI_OLLAMA_MAX_QUEUE,
             "boost_active": LOCALAI_BOOST_ACTIVE,
+            "rag_preset": LOCALAI_RAG_PRESET,
+            "qdrant": qdrant,
             "error": str(e),
         }
 
@@ -431,6 +520,8 @@ async def metrics() -> dict[str, Any]:
         "keep_alive": LOCALAI_OLLAMA_KEEP_ALIVE,
         "max_queue": LOCALAI_OLLAMA_MAX_QUEUE,
         "boost_active": LOCALAI_BOOST_ACTIVE,
+        "rag_preset": LOCALAI_RAG_PRESET,
+        "qdrant": qdrant,
     }
 
 
@@ -554,6 +645,16 @@ async def index() -> str:
         border-radius: 10px;
         background: #101010;
         padding: 9px 11px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .ragbar {
+        margin-top: 8px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #0f1011;
+        padding: 8px 11px;
         display: flex;
         flex-wrap: wrap;
         gap: 12px;
@@ -688,6 +789,13 @@ async def index() -> str:
           <div class=\"hwitem\"><b>GPU:</b> <span id=\"hw-gpu\">-</span></div>
           <div class=\"hwitem\"><b>System RAM:</b> <span id=\"hw-ram\">-</span></div>
           <div class=\"hwitem\"><b>Runtime:</b> <span id=\"hw-runtime\">-</span></div>
+        </div>
+        <div class=\"ragbar\">
+          <div class=\"hwitem\"><b>RAG Preset:</b> <span id=\"rag-preset\">-</span></div>
+          <div class=\"hwitem\"><b>Qdrant:</b> <span id=\"rag-qdrant\">-</span></div>
+          <div class=\"hwitem\"><b>Collections:</b> <span id=\"rag-collections\">-</span></div>
+          <div class=\"hwitem\"><b>Vectors:</b> <span id=\"rag-vectors\">-</span></div>
+          <div class=\"hwitem\"><b>Qdrant Latency:</b> <span id=\"rag-latency\">-</span></div>
         </div>
 
         <div class=\"grid\">
@@ -986,6 +1094,14 @@ async def index() -> str:
           'hw-runtime',
           `parallel ${m.num_parallel ?? '-'} \u00b7 max loaded ${m.max_loaded_models ?? '-'} \u00b7 queue ${m.max_queue ?? '-'} \u00b7 keep_alive ${m.keep_alive ?? '-'}${m.boost_active ? ' \u00b7 boost ON' : ''}`
         );
+        const q = m.qdrant || {};
+        const qEnabled = q.enabled !== false;
+        const qUp = qEnabled && q.up;
+        setText('rag-preset', (m.rag_preset || '-').toLowerCase());
+        setText('rag-qdrant', !qEnabled ? 'disabled' : (qUp ? 'online' : 'unavailable'));
+        setText('rag-collections', qEnabled ? String(q.collections ?? '-') : '-');
+        setText('rag-vectors', qEnabled ? `${q.indexed_vectors_total ?? 0} indexed / ${q.points_total ?? 0} total` : '-');
+        setText('rag-latency', qEnabled ? (q.latency_ms >= 0 ? `${q.latency_ms} ms` : '-') : '-');
 
         pushMetric('models', m.models_total ?? 0);
         pushMetric('store', m.models_store_bytes ?? 0);

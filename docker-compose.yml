@@ -2,10 +2,24 @@ services:
   openwebui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: openwebui
+    depends_on:
+      - qdrant
     ports:
       - "${LOCALAI_BIND_IP:-127.0.0.1}:${LOCALAI_OPENWEBUI_PORT:-3000}:8080"
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - VECTOR_DB=qdrant
+      - QDRANT_URI=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - RAG_EMBEDDING_ENGINE=ollama
+      - RAG_EMBEDDING_MODEL=${LOCALAI_RAG_EMBED_MODEL:-nomic-embed-text}
+      - RAG_OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - RAG_TOP_K=${LOCALAI_RAG_TOP_K:-2}
+      - CHUNK_SIZE=${LOCALAI_RAG_CHUNK_SIZE:-800}
+      - CHUNK_OVERLAP=${LOCALAI_RAG_CHUNK_OVERLAP:-100}
+      - ENABLE_RAG_HYBRID_SEARCH=${LOCALAI_RAG_HYBRID_SEARCH:-false}
+      - RAG_EMBEDDING_BATCH_SIZE=${LOCALAI_RAG_EMBED_BATCH_SIZE:-1}
+      - RAG_EMBEDDING_CONCURRENT_REQUESTS=${LOCALAI_RAG_EMBED_CONCURRENT_REQUESTS:-1}
     volumes:
       - openwebui-data:/app/backend/data
     restart: unless-stopped
@@ -20,9 +34,37 @@ services:
         required: false
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - MODEL_ADMIN_USERNAME=${MODEL_ADMIN_USERNAME:-}
       - MODEL_ADMIN_PASSWORD=${MODEL_ADMIN_PASSWORD:-}
+    restart: unless-stopped
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: localai-qdrant
+    ports:
+      - "${LOCALAI_BIND_IP:-127.0.0.1}:${LOCALAI_QDRANT_PORT:-6333}:6333"
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        if [ -n "${QDRANT_API_KEY:-}" ]; then
+          export QDRANT__SERVICE__API_KEY="${QDRANT_API_KEY}"
+        else
+          unset QDRANT__SERVICE__API_KEY
+        fi
+        exec ./entrypoint.sh
+    environment:
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=${LOCALAI_QDRANT_DEFAULT_SEGMENT_NUMBER:-2}
+      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD_KB=${LOCALAI_QDRANT_MEMMAP_THRESHOLD_KB:-100000}
+      - QDRANT__STORAGE__OPTIMIZERS__INDEXING_THRESHOLD_KB=${LOCALAI_QDRANT_INDEXING_THRESHOLD_KB:-50000}
+      - QDRANT__STORAGE__HNSW_INDEX__M=${LOCALAI_QDRANT_HNSW_M:-24}
+      - QDRANT__STORAGE__HNSW_INDEX__EF_CONSTRUCT=${LOCALAI_QDRANT_HNSW_EF_CONSTRUCT:-100}
+    volumes:
+      - qdrant-data:/qdrant/storage
     restart: unless-stopped
 
 volumes:
   openwebui-data:
+  qdrant-data:

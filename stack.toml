@@ -6,7 +6,7 @@ enabled = true
 label = "com.localai.ollama"
 host = "127.0.0.1"
 port = 11434
-models = ["llama3.2:3b"]
+models = ["llama3.2:3b", "nomic-embed-text"]
 warmup_model = "llama3.2:3b"
 warmup_prompt = "Reply with exactly: warm"
 
@@ -26,7 +26,21 @@ respect_user_values = true
 
 [docker]
 compose_file = "docker-compose.yml"
-services = ["openwebui", "model-admin"]
+services = ["openwebui", "model-admin", "qdrant"]
+
+[rag]
+preset = "fast"
+
+[rag.qdrant]
+enabled = true
+
+# Optional manual overrides (if set, they win when tuning.respect_user_values = true):
+# default_segment_number = 2
+# memmap_threshold_kb = 100000
+# indexing_threshold_kb = 50000
+# hnsw_m = 24
+# hnsw_ef_construct = 100
 
 [health]
 openwebui_url = "http://127.0.0.1:3000/health"
+qdrant_url = "http://127.0.0.1:6333/healthz"
