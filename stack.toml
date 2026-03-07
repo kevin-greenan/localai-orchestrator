@@ -28,6 +28,9 @@ respect_user_values = true
 compose_file = "docker-compose.yml"
 services = ["openwebui", "model-admin", "qdrant"]
 
+[rag]
+preset = "fast"
+
 [rag.qdrant]
 enabled = true
 

@@ -59,6 +59,7 @@ class QdrantConfig:
 
 @dataclass(slots=True)
 class RagConfig:
+    preset: str
     qdrant: QdrantConfig
 
 
@@ -89,6 +90,8 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
     tuning_raw = raw.get("tuning", {})
     rag_raw = raw.get("rag", {})
     qdrant_raw = rag_raw.get("qdrant", {})
+    preset_raw = str(rag_raw.get("preset", "fast")).strip().lower()
+    preset = preset_raw if preset_raw in {"fast", "deep"} else "fast"
 
     ollama = OllamaConfig(
         enabled=bool(ollama_raw.get("enabled", True)),
@@ -138,7 +141,10 @@ def load_stack(path: str | Path = DEFAULT_STACK) -> StackConfig:
         user_set_hnsw_m="hnsw_m" in qdrant_raw,
         user_set_hnsw_ef_construct="hnsw_ef_construct" in qdrant_raw,
     )
-    rag = RagConfig(qdrant=qdrant)
+    rag = RagConfig(
+        preset=preset,
+        qdrant=qdrant,
+    )
 
     return StackConfig(
         name=str(project.get("name", "localai")),

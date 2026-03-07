@@ -92,6 +92,9 @@ localai up --sync-models --warmup
 # Higher-utilization mode (good for larger Apple Silicon machines)
 localai up --boost --warmup
 
+# Higher-quality retrieval profile (more context, slower)
+localai up --rag-preset deep --warmup
+
 # Expose services on all interfaces (OpenWebUI defaults to :80)
 localai up --expose --sync-models --warmup
 
@@ -116,6 +119,9 @@ What each flag does:
 - `--no-webui`: starts `model-admin` + `qdrant` (OpenWebUI is not started)
 - `--boost`: applies a higher-utilization runtime profile (parallelism/queue/keep-alive, and model residency when RAM allows)
   - Also applies a more aggressive Qdrant profile (segment/index/HNSW settings) unless manually overridden
+- `--rag-preset {fast,deep}`: sets OpenWebUI RAG defaults
+  - `fast` (default): lower latency (`top_k=2`, `chunk_size=800`, no hybrid search)
+  - `deep`: higher recall/context (`top_k=5`, `chunk_size=1200`, hybrid search on)
 
 ### Stop Modes
 
@@ -166,6 +172,7 @@ OpenWebUI is pre-wired for RAG out of the box:
 - `QDRANT_URI=http://qdrant:6333`
 - `RAG_EMBEDDING_ENGINE=ollama`
 - `RAG_EMBEDDING_MODEL=nomic-embed-text` (override with `LOCALAI_RAG_EMBED_MODEL`)
+- `RAG_TOP_K`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, and `ENABLE_RAG_HYBRID_SEARCH` are set from the selected `rag` preset (`fast` by default)
 
 Default model sync includes both chat and embedding models:
 
@@ -185,6 +192,7 @@ Key sections:
 
 - `[native.ollama]`: host/port, models, warmup defaults, optional manual runtime overrides
 - `[docker]`: compose file and service list
+- `[rag]`: RAG preset (`fast` or `deep`) used for OpenWebUI retrieval defaults
 - `[rag.qdrant]`: qdrant enable/disable and optional manual tuning overrides
 - `[health]`: health-check URLs
 - `[tuning]`: auto-tuning behavior
@@ -217,6 +225,12 @@ respect_user_values = true
 ```
 
 If you set manual values in `[native.ollama]` or `[rag.qdrant]` and keep `respect_user_values = true`, your values win.
+
+RAG preset persistence note:
+
+- OpenWebUI stores retrieval settings in its own persistent DB.
+- `--rag-preset` (or `[rag].preset`) applies startup defaults, mainly for fresh setups.
+- If you already changed retrieval settings in the OpenWebUI UI, those saved values may override env defaults until you change/reset them in UI.
 
 ## Runtime Files
 
