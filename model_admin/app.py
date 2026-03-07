@@ -1087,7 +1087,7 @@ def _render_layout(title: str, subtitle: str, active_tab: str, content: str, scr
       .catalog-table {{ width: 100%; border-collapse: collapse; }}
       .catalog-table th, .catalog-table td {{ text-align: left; border-bottom: 1px solid var(--border); padding: 7px; vertical-align: top; }}
       .catalog-table th {{ color: var(--muted); font-weight: 500; font-size: 12px; }}
-      .chip {{ display: inline-block; border: 1px solid var(--border); color: var(--muted); padding: 1px 7px; border-radius: 999px; font-size: 11px; }}
+      .chip {{ display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border); color: var(--muted); padding: 1px 9px; min-height: 24px; border-radius: 999px; font-size: 11px; line-height: 1; }}
       .chip.installed {{ color: #86efac; border-color: #14532d; }}
       .chip.class {{ color: #c4b5fd; border-color: #4c1d95; }}
       .chip.fit-great {{ color: #86efac; border-color: #166534; }}
@@ -1429,8 +1429,25 @@ async def tests_page() -> str:
       <div class=\"controls\">
         <input id=\"smoke-model\" placeholder=\"Optional model override (e.g. llama3.2:3b)\" />
         <button class=\"ok\" onclick=\"runSmoke()\">Run Smoke Tests</button>
+        <span id=\"smoke-overall\" class=\"chip\">idle</span>
       </div>
-      <pre id=\"smoke-log\">Smoke tests idle.</pre>
+
+      <div class=\"grid\">
+        <div class=\"card\"><div class=\"label\">Passed</div><div id=\"s-passed\" class=\"value\">-</div></div>
+        <div class=\"card\"><div class=\"label\">Failed</div><div id=\"s-failed\" class=\"value\">-</div></div>
+        <div class=\"card\"><div class=\"label\">Skipped</div><div id=\"s-skipped\" class=\"value\">-</div></div>
+        <div class=\"card\"><div class=\"label\">Duration</div><div id=\"s-duration\" class=\"value\">-</div></div>
+      </div>
+
+      <table>
+        <thead><tr><th>Check</th><th>Status</th><th>Duration</th><th>Model</th><th>Detail</th></tr></thead>
+        <tbody id=\"smoke-results\"><tr><td colspan=\"5\" class=\"muted\">No smoke run yet.</td></tr></tbody>
+      </table>
+
+      <details class=\"advanced\">
+        <summary>Raw Smoke JSON</summary>
+        <pre id=\"smoke-log\">Smoke tests idle.</pre>
+      </details>
 
       <div class=\"section-title\">Benchmarking</div>
       <div class=\"controls\">
@@ -1442,6 +1459,7 @@ async def tests_page() -> str:
       </div>
       <div class=\"controls\">
         <button class=\"warn\" onclick=\"runBenchmark()\">Run Benchmark</button>
+        <span id=\"bench-overall\" class=\"chip\">idle</span>
       </div>
 
       <div class=\"grid\">
@@ -1450,22 +1468,102 @@ async def tests_page() -> str:
         <div class=\"card\"><div class=\"label\">Latency P95</div><div id=\"b-lat-p95\" class=\"value\">-</div></div>
         <div class=\"card\"><div class=\"label\">Tokens/sec Avg</div><div id=\"b-tps\" class=\"value\">-</div></div>
       </div>
-      <pre id=\"bench-log\">Benchmark idle.</pre>
+
+      <table>
+        <thead><tr><th>Run</th><th>Status</th><th>Latency</th><th>Tokens/s</th><th>Eval Tokens</th><th>Detail</th></tr></thead>
+        <tbody id=\"bench-results\"><tr><td colspan=\"6\" class=\"muted\">No benchmark run yet.</td></tr></tbody>
+      </table>
+
+      <details class=\"advanced\">
+        <summary>Raw Benchmark JSON</summary>
+        <pre id=\"bench-log\">Benchmark idle.</pre>
+      </details>
     """
 
     script = """
     <script>
+      function esc(s){
+        return String(s ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
       function setText(id, value){ const el=document.getElementById(id); if(el) el.textContent=value; }
+      function setBadge(id, state){
+        const el=document.getElementById(id);
+        if(!el) return;
+        if(state === 'pass'){ el.className='chip fit-great'; el.textContent='pass'; return; }
+        if(state === 'fail'){ el.className='chip fit-heavy'; el.textContent='fail'; return; }
+        if(state === 'running'){ el.className='chip fit-tight'; el.textContent='running'; return; }
+        el.className='chip'; el.textContent='idle';
+      }
+
+      function renderSmokeChecks(checks){
+        const body=document.getElementById('smoke-results');
+        if(!body) return;
+        if(!checks || checks.length === 0){
+          body.innerHTML='<tr><td colspan=\"5\" class=\"muted\">No checks returned.</td></tr>';
+          return;
+        }
+        body.innerHTML = checks.map((c) => {
+          const state = c.skipped ? '<span class=\"chip\">skipped</span>' : (c.ok ? '<span class=\"chip fit-great\">pass</span>' : '<span class=\"chip fit-heavy\">fail</span>');
+          const detail = c.detail ? esc(c.detail) : '';
+          return `<tr>
+            <td>${esc(c.name || '-')}</td>
+            <td>${state}</td>
+            <td>${Number(c.duration_ms ?? 0)} ms</td>
+            <td>${esc(c.model || '-')}</td>
+            <td class=\"muted\">${detail}</td>
+          </tr>`;
+        }).join('');
+      }
+
+      function renderBenchmarkRuns(samples){
+        const body=document.getElementById('bench-results');
+        if(!body) return;
+        if(!samples || samples.length === 0){
+          body.innerHTML='<tr><td colspan=\"6\" class=\"muted\">No benchmark samples returned.</td></tr>';
+          return;
+        }
+        body.innerHTML = samples.map((s) => {
+          const status = s.ok ? '<span class=\"chip fit-great\">pass</span>' : '<span class=\"chip fit-heavy\">fail</span>';
+          const latency = Number(s.latency_ms ?? 0).toFixed(2) + ' ms';
+          const tps = s.tokens_per_second > 0 ? Number(s.tokens_per_second).toFixed(2) : '-';
+          const evalCount = s.eval_count ?? '-';
+          const detail = s.ok ? `${Number(s.total_duration_ms ?? 0).toFixed(2)} ms total` : esc(s.error || '');
+          return `<tr>
+            <td>${s.run ?? '-'}</td>
+            <td>${status}</td>
+            <td>${latency}</td>
+            <td>${tps}</td>
+            <td>${evalCount}</td>
+            <td class=\"muted\">${detail}</td>
+          </tr>`;
+        }).join('');
+      }
+
       async function runSmoke(){
         const model=(document.getElementById('smoke-model').value || '').trim();
         const box=document.getElementById('smoke-log');
+        setBadge('smoke-overall', 'running');
         box.textContent='Running smoke tests...';
         try {
           const r=await fetch('/api/tests/smoke', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ model }) });
           const data=await r.json();
           if(!r.ok) throw new Error(JSON.stringify(data));
+          const s=data.summary || {};
+          setText('s-passed', String(s.passed ?? '-'));
+          setText('s-failed', String(s.failed ?? '-'));
+          setText('s-skipped', String(s.skipped ?? '-'));
+          setText('s-duration', s.duration_ms >= 0 ? `${s.duration_ms} ms` : '-');
+          renderSmokeChecks(data.checks || []);
+          setBadge('smoke-overall', data.ok ? 'pass' : 'fail');
           box.textContent=JSON.stringify(data, null, 2);
         } catch(e) {
+          setBadge('smoke-overall', 'fail');
+          renderSmokeChecks([]);
           box.textContent=`Smoke tests failed: ${e}`;
         }
       }
@@ -1475,6 +1573,7 @@ async def tests_page() -> str:
         const prompt=(document.getElementById('bench-prompt').value || '').trim();
         const iterations=Number(document.getElementById('bench-iters').value || 5);
         const box=document.getElementById('bench-log');
+        setBadge('bench-overall', 'running');
         box.textContent='Running benchmark...';
         try {
           const r=await fetch('/api/benchmarks/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ model, prompt, iterations }) });
@@ -1485,8 +1584,12 @@ async def tests_page() -> str:
           setText('b-lat-avg', s.latency_ms_avg >= 0 ? `${s.latency_ms_avg} ms` : '-');
           setText('b-lat-p95', s.latency_ms_p95 >= 0 ? `${s.latency_ms_p95} ms` : '-');
           setText('b-tps', s.tokens_per_second_avg > 0 ? String(s.tokens_per_second_avg) : '-');
+          renderBenchmarkRuns(data.samples || []);
+          setBadge('bench-overall', (s.failed_runs ?? 0) === 0 ? 'pass' : 'fail');
           box.textContent=JSON.stringify(data, null, 2);
         } catch(e) {
+          setBadge('bench-overall', 'fail');
+          renderBenchmarkRuns([]);
           box.textContent=`Benchmark failed: ${e}`;
         }
       }
